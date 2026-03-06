@@ -1,0 +1,11 @@
+[package]
+name    = "clignote-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clignote-core.workspace = true
+ratatui.workspace   = true
+crossterm.workspace = true
+anyhow.workspace    = true

@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/cln", "crates/clignote-core", "crates/clignote-tui"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+clignote-core = { path = "crates/clignote-core" }
+clignote-tui  = { path = "crates/clignote-tui" }
+thiserror = "2"
+anyhow    = "1"
+ratatui   = "0.28"
+crossterm = "0.28"
+clap      = { version = "4", features = ["derive"] }
