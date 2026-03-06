@@ -1,0 +1,81 @@
+#+title: clignote — project tasks
+
+* tasks
+
+** infrastructure
+
+** TODO set up Cargo workspace with crates (cln, clignote-core, clignote-tui)
+** TODO configure CI (GitHub Actions): fmt, clippy, test on push
+** TODO set up release workflow (cargo-dist or similar) to produce binaries
+** TODO write initial Cargo.toml with shared dependencies and workspace settings
+
+** core: org-mode parser (clignote-core)
+
+** TODO design document model (Document, Section, Headline, Block, Inline types)
+** TODO implement lossless tokenizer / lexer for org-mode
+** TODO parse headings with level, TODO keyword, priority, title, tags
+** TODO parse paragraph text and inline markup (bold, italic, code, underline, strikethrough, verbatim)
+** TODO parse links: [[url][description]] and bare URLs
+** TODO parse unordered and ordered lists
+** TODO parse property drawers (:PROPERTIES: ... :END:)
+** TODO parse source blocks (#+begin_src ... #+end_src)
+** TODO parse keyword lines (#+title:, #+author:, etc.)
+** TODO parse timestamps (<YYYY-MM-DD> and [YYYY-MM-DD])
+** TODO implement serializer: document model → org-mode text (lossless round-trip)
+** TODO write comprehensive unit tests for parser (round-trip property)
+
+** tui: terminal editor (clignote-tui)
+
+** TODO choose and integrate ratatui as TUI framework
+** TODO implement basic app loop: render → handle input → update state
+** TODO implement buffer model: in-memory representation of an open file
+** TODO implement cursor model with line + column tracking
+** TODO render text with org-mode syntax highlighting (headings, bold, etc.)
+** TODO implement normal mode with basic movement (h j k l, w b e, 0 $, gg G)
+** TODO implement insert mode (i, a, o, O, <Esc>)
+** TODO implement visual mode (v, V, line selection)
+** TODO implement operator + motion pattern (d, y, c combined with motions)
+** TODO implement delete line (dd), yank line (yy), paste (p, P)
+** TODO implement undo / redo (u, C-r)
+** TODO implement command mode (:w, :q, :wq, :e <file>)
+** TODO implement status bar (mode indicator, filename, cursor position)
+** TODO implement file open from CLI argument
+** TODO implement file picker (when no argument given, list .org files)
+** TODO handle unsaved changes prompt on quit
+
+** cli: binary entry point (cln)
+
+** TODO set up cln binary crate with clap for argument parsing
+** TODO wire cln → clignote-tui for file opening
+** TODO support --version and --help flags
+
+** future: org-mode advanced features
+
+** TODO TODO keyword cycling (S-<right> / S-<left>)
+** TODO tag editing and auto-completion
+** TODO org-mode agenda view
+** TODO org-mode capture
+** TODO folding / cycling visibility of headings (Tab, S-Tab)
+** TODO inline image preview (sixel or kitty protocol)
+** TODO org-babel: execute source blocks
+
+** future: desktop app (macOS)
+
+** TODO evaluate framework: Swift/AppKit vs Tauri vs custom ratatui in a window
+** TODO design clignote-desktop crate structure
+** TODO implement native macOS menubar and window chrome
+** TODO reuse clignote-core for parsing
+
+** future: mobile app
+
+** TODO evaluate framework: Flutter vs React Native
+** TODO design clignote-mobile project structure
+** TODO implement touch-friendly editing UI
+** TODO reuse clignote-core (via FFI or WASM) for parsing
+
+** documentation
+
+** TODO write user guide in readme.org (installation, usage, keybindings)
+** TODO document org-mode support matrix (what is and isn't supported)
+** TODO add CHANGELOG.org
+** TODO publish crate to crates.io and write crates.io description

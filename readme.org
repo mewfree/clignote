@@ -1,0 +1,72 @@
+#+title: clignote
+
+* Clignote
+
+A terminal-first text editor for org-mode files, with evil-mode (vim) keybindings.
+
+~cln~ is the CLI entry point.
+
+** goals
+
+- fast, distraction-free editing of org-mode files in the terminal
+- vim motions / keybindings (evil-mode style) as first-class citizens
+- correct parsing and rendering of org-mode syntax
+- future: native macOS desktop app
+- future: mobile app (Android / iOS)
+
+** status
+
+early development — CLI only, not yet usable
+
+** installation
+
+#+begin_src sh
+cargo install clignote
+#+end_src
+
+or build from source:
+
+#+begin_src sh
+git clone https://github.com/damien/clignote
+cd clignote
+cargo build --release
+# binary is at ./target/release/cln
+#+end_src
+
+** usage
+
+#+begin_src sh
+cln file.org          # open a file
+cln                   # open file picker in current directory
+#+end_src
+
+*** keybindings (evil-mode)
+
+| key       | action                        |
+|-----------+-------------------------------|
+| ~h j k l~ | move left / down / up / right |
+| ~w b e~   | word motions                  |
+| ~0 $~     | line start / end              |
+| ~gg G~    | file start / end              |
+| ~i a o O~ | enter insert mode             |
+| ~<Esc>~   | return to normal mode         |
+| ~dd~      | delete line                   |
+| ~yy~      | yank line                     |
+| ~p P~     | paste after / before          |
+| ~u~       | undo                          |
+| ~C-r~     | redo                          |
+| ~:w~      | save                          |
+| ~:q~      | quit                          |
+| ~:wq~     | save and quit                 |
+
+** org-mode support
+
+| feature               | status  |
+|-----------------------+---------|
+| headings (~* ** ...~) | planned |
+| TODO keywords         | planned |
+| bold / italic / code  | planned |
+| links                 | planned |
+| tags                  | planned |
+| agenda                | future  |
+| babel / src blocks    | future  |
