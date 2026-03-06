@@ -290,6 +290,39 @@ impl Pane {
         self.modified = true;
     }
 
+    // ── Org-mode helpers ──────────────────────────────────────────────────────
+
+    /// Toggle the checkbox on the current line if it is a list item with one.
+    /// Cycles: `[ ]` → `[X]` → `[ ]`  (`[-]` also resets to `[ ]`).
+    pub fn toggle_checkbox(&mut self) {
+        let line = self.lines[self.cursor_row].clone();
+        let indent = line.len() - line.trim_start().len();
+        let tail = &line[indent..];
+
+        let after_bullet = if tail.starts_with("- ") || tail.starts_with("+ ") {
+            indent + 2
+        } else {
+            let digits = tail.chars().take_while(|c| c.is_ascii_digit()).count();
+            if digits > 0 && tail.get(digits..).map_or(false, |s| s.starts_with(". ")) {
+                indent + digits + 2
+            } else {
+                return;
+            }
+        };
+
+        let rest = &line[after_bullet..];
+        let new_cb = if rest.starts_with("[ ] ") {
+            "[X]"
+        } else if rest.starts_with("[X] ") || rest.starts_with("[x] ") || rest.starts_with("[-] ") {
+            "[ ]"
+        } else {
+            return;
+        };
+
+        self.lines[self.cursor_row].replace_range(after_bullet..after_bullet + 3, new_cb);
+        self.modified = true;
+    }
+
     // ── Persistence ───────────────────────────────────────────────────────────
 
     pub fn save(&mut self) -> Result<String, String> {

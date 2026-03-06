@@ -237,12 +237,27 @@ fn org_styles(line: &str) -> Vec<Style> {
         return styles;
     }
 
-    // ── List bullets ─────────────────────────────────────────────────────────
+    // ── List bullets & checkboxes ─────────────────────────────────────────────
     if let Some(first_non_space) = chars.iter().position(|&c| c != ' ') {
         if matches!(chars[first_non_space], '-' | '+') {
             styles[first_non_space] = Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD);
+            // Checkbox: "- [ ] " / "- [X] " / "- [-] "
+            let cb_start = first_non_space + 2;
+            if chars.get(cb_start) == Some(&'[') && chars.get(cb_start + 2) == Some(&']') {
+                let state_char = chars.get(cb_start + 1).copied();
+                let cb_style = match state_char {
+                    Some('X') | Some('x') => Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                    Some('-') => Style::default().fg(Color::Yellow),
+                    _ => Style::default().fg(Color::DarkGray),
+                };
+                for i in cb_start..=(cb_start + 2).min(n.saturating_sub(1)) {
+                    styles[i] = cb_style;
+                }
+            }
         }
     }
 

@@ -332,6 +332,9 @@ impl App {
                 self.mode = Mode::Command;
             }
 
+            // ── Org-mode ──────────────────────────────────────────────────────
+            KeyCode::Enter => self.pane_mut().toggle_checkbox(),
+
             // ── Misc ──────────────────────────────────────────────────────────
             KeyCode::Esc => {
                 self.key_seq.clear();
