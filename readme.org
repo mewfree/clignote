@@ -20,17 +20,22 @@ early development — CLI only, not yet usable
 
 ** installation
 
-#+begin_src sh
-cargo install clignote
-#+end_src
+*** from source
 
-or build from source:
+Requires [[https://rustup.rs/][Rust]] 1.75 or later.
 
 #+begin_src sh
 git clone https://github.com/damien/clignote
 cd clignote
-cargo build --release
-# binary is at ./target/release/cln
+cargo install --path crates/cln
+#+end_src
+
+This installs =cln= to =~/.cargo/bin=, which is on your =PATH= if you followed the standard Rust installation.
+
+*** cargo
+
+#+begin_src sh
+cargo install clignote
 #+end_src
 
 ** usage
