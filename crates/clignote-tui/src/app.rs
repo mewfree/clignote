@@ -1,12 +1,18 @@
-use std::path::PathBuf;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::keymap::{self, Action, MatchResult, PaneDir};
+use crate::pane::Pane;
+
+// ── Mode ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Normal,
     Insert,
     Command,
+    /// `line_wise = true` → V (line visual), false → v (char visual)
+    Visual { line_wise: bool },
 }
 
 impl Mode {
@@ -15,175 +21,266 @@ impl Mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Command => "COMMAND",
+            Mode::Visual { line_wise: true } => "V-LINE",
+            Mode::Visual { line_wise: false } => "VISUAL",
         }
     }
 }
 
+// ── Split layout ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitLayout {
+    Single,
+    /// pane[0] left │ pane[1] right
+    Horizontal,
+    /// pane[0] top / pane[1] bottom
+    Vertical,
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+
 pub struct App {
     pub mode: Mode,
-    /// Raw lines of the open file.
-    pub lines: Vec<String>,
-    /// 0-based cursor row.
-    pub cursor_row: usize,
-    /// 0-based cursor column (byte index, clamped to line length).
-    pub cursor_col: usize,
-    /// First visible line (scroll offset).
-    pub viewport_top: usize,
-    pub file_path: Option<PathBuf>,
-    pub modified: bool,
-    /// Content of the command-mode input (after `:`).
-    pub command_buf: String,
-    /// One-line status message displayed in the footer.
-    pub message: Option<String>,
-    pub should_quit: bool,
-    /// Pending normal-mode operator (e.g. 'd' waiting for second 'd').
-    pending_op: Option<char>,
-    /// Default register (for yank/delete).
+    pub panes: Vec<Pane>,
+    pub active_pane: usize,
+    pub layout: SplitLayout,
+
+    /// Shared yank register.
     pub register: Vec<String>,
+
+    // Visual mode state
+    pub visual_anchor: Option<(usize, usize)>, // (row, col) where v/V was pressed
+
+    // Multi-key sequence accumulator (normal mode)
+    pub key_seq: Vec<KeyEvent>,
+
+    // Command mode input
+    pub command_buf: String,
+
+    // Status message (clears on next keypress)
+    pub message: Option<String>,
+
+    pub should_quit: bool,
+
+    /// Pane rects as computed by the last render pass — used for mouse click mapping.
+    pub pane_rects: Vec<Rect>,
 }
 
 impl App {
     pub fn new(file_path: Option<&str>) -> anyhow::Result<Self> {
-        let (lines, path) = match file_path {
-            Some(p) => {
-                let content = std::fs::read_to_string(p)?;
-                let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
-                // Ensure at least one line so the cursor is always valid
-                let lines = if lines.is_empty() { vec![String::new()] } else { lines };
-                (lines, Some(PathBuf::from(p)))
-            }
-            None => (vec![String::new()], None),
+        let pane = match file_path {
+            Some(p) => Pane::from_file(p)?,
+            None => Pane::empty(),
         };
-
         Ok(Self {
             mode: Mode::Normal,
-            lines,
-            cursor_row: 0,
-            cursor_col: 0,
-            viewport_top: 0,
-            file_path: path,
-            modified: false,
+            panes: vec![pane],
+            active_pane: 0,
+            layout: SplitLayout::Single,
+            register: Vec::new(),
+            visual_anchor: None,
+            key_seq: Vec::new(),
             command_buf: String::new(),
             message: None,
             should_quit: false,
-            pending_op: None,
-            register: Vec::new(),
+            pane_rects: Vec::new(),
         })
     }
 
-    // ── Input dispatch ────────────────────────────────────────────────────────
+    // ── Pane access ───────────────────────────────────────────────────────────
+
+    pub fn pane(&self) -> &Pane {
+        &self.panes[self.active_pane]
+    }
+
+    pub fn pane_mut(&mut self) -> &mut Pane {
+        &mut self.panes[self.active_pane]
+    }
+
+    // ── Top-level input dispatch ──────────────────────────────────────────────
 
     pub fn handle_key(&mut self, key: KeyEvent) {
-        // Clear transient message on any keypress
         self.message = None;
-
-        match self.mode {
+        match &self.mode.clone() {
             Mode::Normal => self.handle_normal(key),
             Mode::Insert => self.handle_insert(key),
             Mode::Command => self.handle_command(key),
+            Mode::Visual { line_wise } => self.handle_visual(key, *line_wise),
+        }
+    }
+
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
+        if let MouseEventKind::Down(MouseButton::Left) = event.kind {
+            self.click_at(event.column as usize, event.row as usize);
+        }
+    }
+
+    fn click_at(&mut self, col: usize, row: usize) {
+        // Find which pane the click landed in
+        for (i, rect) in self.pane_rects.iter().enumerate() {
+            if col >= rect.x as usize
+                && col < (rect.x + rect.width) as usize
+                && row >= rect.y as usize
+                && row < (rect.y + rect.height) as usize
+            {
+                self.active_pane = i;
+                let pane = &mut self.panes[i];
+                let buf_row = (pane.viewport_top + row - rect.y as usize)
+                    .min(pane.lines.len().saturating_sub(1));
+                let buf_col = (col - rect.x as usize)
+                    .min(pane.lines[buf_row].len().saturating_sub(1));
+                pane.cursor_row = buf_row;
+                pane.cursor_col = buf_col;
+                // Leave visual mode on click
+                if matches!(self.mode, Mode::Visual { .. }) {
+                    self.mode = Mode::Normal;
+                    self.visual_anchor = None;
+                }
+                break;
+            }
         }
     }
 
     // ── Normal mode ───────────────────────────────────────────────────────────
 
     fn handle_normal(&mut self, key: KeyEvent) {
+        self.key_seq.push(key);
+        let seq_str = keymap::seq_to_str(&self.key_seq);
+
+        match keymap::match_seq(&seq_str) {
+            MatchResult::Prefix => {
+                let hint = keymap::hint_for_prefix(&seq_str);
+                self.message = Some(format!("[{}]  {}", seq_str, hint));
+                return; // keep accumulating
+            }
+            MatchResult::Action(action) => {
+                self.key_seq.clear();
+                self.dispatch_action(action);
+                return;
+            }
+            MatchResult::NoMatch => {
+                let was_accumulating = self.key_seq.len() > 1;
+                let solo_key = self.key_seq.remove(0);
+                self.key_seq.clear();
+                if !was_accumulating {
+                    self.handle_single_normal(solo_key);
+                }
+                // If was_accumulating: discard the failed sequence
+            }
+        }
+    }
+
+    /// Handle single-key normal-mode bindings (not part of a multi-key sequence).
+    fn handle_single_normal(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             // ── Movement ─────────────────────────────────────────────────────
-            KeyCode::Char('h') | KeyCode::Left => self.move_left(),
-            KeyCode::Char('j') | KeyCode::Down => self.move_down(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_up(1),
-            KeyCode::Char('l') | KeyCode::Right => self.move_right(),
+            KeyCode::Char('h') | KeyCode::Left => self.pane_mut().move_left(),
+            KeyCode::Char('j') | KeyCode::Down => self.pane_mut().move_down(1),
+            KeyCode::Char('k') | KeyCode::Up => self.pane_mut().move_up(1),
+            KeyCode::Char('l') | KeyCode::Right => self.pane_mut().move_right(),
+            KeyCode::Char('w') if !ctrl => self.pane_mut().move_word_forward(),
+            KeyCode::Char('b') if !ctrl => self.pane_mut().move_word_backward(),
+            KeyCode::Char('0') | KeyCode::Home => self.pane_mut().move_line_start(),
+            KeyCode::Char('$') | KeyCode::End => self.pane_mut().move_line_end(),
+            KeyCode::Char('G') => self.pane_mut().move_file_end(),
 
-            // Word motions (basic: jump to next/prev whitespace boundary)
-            KeyCode::Char('w') => self.move_word_forward(),
-            KeyCode::Char('b') => self.move_word_backward(),
-
-            // Line boundaries
-            KeyCode::Char('0') => self.cursor_col = 0,
-            KeyCode::Char('$') | KeyCode::End => {
-                self.cursor_col = self.current_line_len().saturating_sub(1);
+            // Ctrl scrolling
+            KeyCode::Char('d') if ctrl => {
+                self.pane_mut().move_down(20);
             }
-
-            // File boundaries
-            KeyCode::Char('G') => {
-                self.cursor_row = self.lines.len().saturating_sub(1);
-                self.clamp_col();
-                self.pending_op = None;
+            KeyCode::Char('u') if ctrl => {
+                self.pane_mut().move_up(20);
             }
-            KeyCode::Char('g') => {
-                if self.pending_op == Some('g') {
-                    self.cursor_row = 0;
-                    self.cursor_col = 0;
-                    self.pending_op = None;
-                } else {
-                    self.pending_op = Some('g');
-                    return; // don't clear pending_op below
-                }
+            KeyCode::Char('f') if ctrl => {
+                self.pane_mut().move_down(40);
+            }
+            KeyCode::Char('b') if ctrl => {
+                self.pane_mut().move_up(40);
             }
 
-            // Ctrl+d / Ctrl+u half-page scroll
-            KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
-                let half = self.half_page();
-                self.move_down(half);
+            // ── Paste ────────────────────────────────────────────────────────
+            KeyCode::Char('p') => {
+                let reg = self.register.clone();
+                self.pane_mut().paste_lines_after(&reg);
             }
-            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
-                let half = self.half_page();
-                self.move_up(half);
+            KeyCode::Char('P') => {
+                let reg = self.register.clone();
+                self.pane_mut().paste_lines_before(&reg);
             }
-
-            // ── Operators: dd, yy ────────────────────────────────────────────
-            KeyCode::Char('d') => {
-                if self.pending_op == Some('d') {
-                    self.delete_line();
-                    self.pending_op = None;
-                } else {
-                    self.pending_op = Some('d');
-                    return;
-                }
-            }
-            KeyCode::Char('y') => {
-                if self.pending_op == Some('y') {
-                    self.yank_line();
-                    self.pending_op = None;
-                } else {
-                    self.pending_op = Some('y');
-                    return;
-                }
-            }
-
-            // Paste
-            KeyCode::Char('p') => self.paste_after(),
-            KeyCode::Char('P') => self.paste_before(),
 
             // ── Mode switches ─────────────────────────────────────────────────
-            KeyCode::Char('i') => self.enter_insert(false),
+            KeyCode::Char('i') => {
+                self.mode = Mode::Insert;
+            }
             KeyCode::Char('a') => {
-                self.cursor_col = self.cursor_col.saturating_add(1).min(self.current_line_len());
-                self.enter_insert(false);
+                let col = self.pane().cursor_col + 1;
+                let max = self.pane().current_line_len();
+                self.pane_mut().cursor_col = col.min(max);
+                self.mode = Mode::Insert;
             }
             KeyCode::Char('o') => {
-                let row = self.cursor_row + 1;
-                self.lines.insert(row, String::new());
-                self.cursor_row = row;
-                self.cursor_col = 0;
-                self.enter_insert(false);
+                self.pane_mut().open_line_below();
+                self.mode = Mode::Insert;
             }
             KeyCode::Char('O') => {
-                self.lines.insert(self.cursor_row, String::new());
-                self.cursor_col = 0;
-                self.enter_insert(false);
+                self.pane_mut().open_line_above();
+                self.mode = Mode::Insert;
+            }
+            KeyCode::Char('v') => {
+                let (r, c) = (self.pane().cursor_row, self.pane().cursor_col);
+                self.visual_anchor = Some((r, c));
+                self.mode = Mode::Visual { line_wise: false };
+            }
+            KeyCode::Char('V') => {
+                let r = self.pane().cursor_row;
+                self.visual_anchor = Some((r, 0));
+                self.mode = Mode::Visual { line_wise: true };
             }
             KeyCode::Char(':') => {
                 self.command_buf.clear();
                 self.mode = Mode::Command;
-                return;
             }
 
+            // ── Misc ──────────────────────────────────────────────────────────
+            KeyCode::Esc => {
+                self.key_seq.clear();
+            }
             _ => {}
         }
+    }
 
-        // Any unhandled key clears a pending operator
-        self.pending_op = None;
+    // ── Action dispatch ───────────────────────────────────────────────────────
+
+    fn dispatch_action(&mut self, action: Action) {
+        match action {
+            Action::GoToFileStart => self.pane_mut().move_file_start(),
+            Action::GoToFileEnd => self.pane_mut().move_file_end(),
+            Action::DeleteLine => {
+                let line = self.pane_mut().delete_line();
+                self.register = vec![line];
+            }
+            Action::YankLine => {
+                let line = self.pane().yank_line();
+                self.register = vec![line];
+                self.message = Some("1 line yanked".into());
+            }
+            Action::SplitHorizontal => self.split(SplitLayout::Horizontal),
+            Action::SplitVertical => self.split(SplitLayout::Vertical),
+            Action::ClosePane => self.close_active_pane(),
+            Action::NextPane => self.cycle_pane(),
+            Action::FocusPane(dir) => self.focus_pane(dir),
+            Action::SaveFile => self.save_active(),
+            Action::QuitAll => {
+                if self.panes.iter().any(|p| p.modified) {
+                    self.message =
+                        Some("Unsaved changes — use :q! or :wq".into());
+                } else {
+                    self.should_quit = true;
+                }
+            }
+        }
     }
 
     // ── Insert mode ───────────────────────────────────────────────────────────
@@ -191,44 +288,18 @@ impl App {
     fn handle_insert(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
-                // Move cursor back one column on leaving insert (vim behaviour)
-                if self.cursor_col > 0 {
-                    self.cursor_col -= 1;
+                if self.pane().cursor_col > 0 {
+                    self.pane_mut().cursor_col -= 1;
                 }
                 self.mode = Mode::Normal;
             }
-            KeyCode::Char(c) => {
-                let col = self.cursor_col;
-                self.lines[self.cursor_row].insert(col, c);
-                self.cursor_col += 1;
-                self.modified = true;
-            }
-            KeyCode::Backspace => {
-                if self.cursor_col > 0 {
-                    self.cursor_col -= 1;
-                    self.lines[self.cursor_row].remove(self.cursor_col);
-                    self.modified = true;
-                } else if self.cursor_row > 0 {
-                    // Join with previous line
-                    let current = self.lines.remove(self.cursor_row);
-                    self.cursor_row -= 1;
-                    self.cursor_col = self.lines[self.cursor_row].len();
-                    self.lines[self.cursor_row].push_str(&current);
-                    self.modified = true;
-                }
-            }
-            KeyCode::Enter => {
-                let col = self.cursor_col;
-                let rest = self.lines[self.cursor_row].split_off(col);
-                self.cursor_row += 1;
-                self.lines.insert(self.cursor_row, rest);
-                self.cursor_col = 0;
-                self.modified = true;
-            }
-            KeyCode::Left => self.move_left(),
-            KeyCode::Right => self.move_right(),
-            KeyCode::Up => self.move_up(1),
-            KeyCode::Down => self.move_down(1),
+            KeyCode::Char(c) => self.pane_mut().insert_char(c),
+            KeyCode::Backspace => self.pane_mut().delete_char_before(),
+            KeyCode::Enter => self.pane_mut().insert_newline(),
+            KeyCode::Left => self.pane_mut().move_left(),
+            KeyCode::Right => self.pane_mut().move_right(),
+            KeyCode::Up => self.pane_mut().move_up(1),
+            KeyCode::Down => self.pane_mut().move_down(1),
             _ => {}
         }
     }
@@ -250,7 +321,6 @@ impl App {
             }
             KeyCode::Backspace => {
                 if self.command_buf.pop().is_none() {
-                    // Empty command buf → leave command mode
                     self.mode = Mode::Normal;
                 }
             }
@@ -262,177 +332,172 @@ impl App {
     }
 
     fn execute_command(&mut self, cmd: &str) {
-        match cmd.trim() {
+        let parts: Vec<&str> = cmd.trim().splitn(2, ' ').collect();
+        match parts[0] {
             "q" => {
-                if self.modified {
-                    self.message = Some("Unsaved changes — use :q! to force quit or :wq to save".into());
+                if self.panes.iter().any(|p| p.modified) {
+                    self.message =
+                        Some("Unsaved changes — use :q! or :wq".into());
                 } else {
                     self.should_quit = true;
                 }
             }
             "q!" => self.should_quit = true,
-            "w" => self.save(),
+            "w" => self.save_active(),
             "wq" | "x" => {
-                self.save();
+                self.save_active();
                 self.should_quit = true;
             }
+            "sp" | "split" => self.split(SplitLayout::Horizontal),
+            "vs" | "vsplit" => self.split(SplitLayout::Vertical),
             other => {
                 self.message = Some(format!("Unknown command: {}", other));
             }
         }
     }
 
-    // ── Movement helpers ──────────────────────────────────────────────────────
+    // ── Visual mode ───────────────────────────────────────────────────────────
 
-    fn move_left(&mut self) {
-        self.cursor_col = self.cursor_col.saturating_sub(1);
-    }
-
-    fn move_right(&mut self) {
-        let max = self.current_line_len().saturating_sub(1);
-        self.cursor_col = (self.cursor_col + 1).min(max);
-    }
-
-    fn move_up(&mut self, n: usize) {
-        self.cursor_row = self.cursor_row.saturating_sub(n);
-        self.clamp_col();
-    }
-
-    fn move_down(&mut self, n: usize) {
-        self.cursor_row = (self.cursor_row + n).min(self.lines.len().saturating_sub(1));
-        self.clamp_col();
-    }
-
-    fn move_word_forward(&mut self) {
-        let line = &self.lines[self.cursor_row];
-        let mut col = self.cursor_col;
-        let bytes = line.as_bytes();
-        // Skip current word chars
-        while col < bytes.len() && !bytes[col].is_ascii_whitespace() {
-            col += 1;
-        }
-        // Skip whitespace
-        while col < bytes.len() && bytes[col].is_ascii_whitespace() {
-            col += 1;
-        }
-        self.cursor_col = col.min(line.len().saturating_sub(1));
-    }
-
-    fn move_word_backward(&mut self) {
-        let line = &self.lines[self.cursor_row];
-        let bytes = line.as_bytes();
-        let mut col = self.cursor_col;
-        if col == 0 {
-            return;
-        }
-        col -= 1;
-        // Skip whitespace going left
-        while col > 0 && bytes[col].is_ascii_whitespace() {
-            col -= 1;
-        }
-        // Skip word chars going left
-        while col > 0 && !bytes[col - 1].is_ascii_whitespace() {
-            col -= 1;
-        }
-        self.cursor_col = col;
-    }
-
-    fn clamp_col(&mut self) {
-        let max = self.current_line_len().saturating_sub(1);
-        self.cursor_col = self.cursor_col.min(max);
-    }
-
-    fn current_line_len(&self) -> usize {
-        self.lines.get(self.cursor_row).map(|l| l.len()).unwrap_or(0)
-    }
-
-    fn half_page(&self) -> usize {
-        20 // approximate; ui.rs adjusts the viewport using terminal height
-    }
-
-    // ── Edit helpers ──────────────────────────────────────────────────────────
-
-    fn enter_insert(&mut self, _prepend: bool) {
-        self.mode = Mode::Insert;
-    }
-
-    fn delete_line(&mut self) {
-        if self.lines.len() == 1 {
-            self.register = vec![self.lines[0].clone()];
-            self.lines[0].clear();
-        } else {
-            let removed = self.lines.remove(self.cursor_row);
-            self.register = vec![removed];
-            if self.cursor_row >= self.lines.len() {
-                self.cursor_row = self.lines.len().saturating_sub(1);
+    fn handle_visual(&mut self, key: KeyEvent, line_wise: bool) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.visual_anchor = None;
             }
+            // Movement — extends selection
+            KeyCode::Char('h') | KeyCode::Left => self.pane_mut().move_left(),
+            KeyCode::Char('j') | KeyCode::Down => self.pane_mut().move_down(1),
+            KeyCode::Char('k') | KeyCode::Up => self.pane_mut().move_up(1),
+            KeyCode::Char('l') | KeyCode::Right => self.pane_mut().move_right(),
+            KeyCode::Char('w') => self.pane_mut().move_word_forward(),
+            KeyCode::Char('b') => self.pane_mut().move_word_backward(),
+            KeyCode::Char('0') | KeyCode::Home => self.pane_mut().move_line_start(),
+            KeyCode::Char('$') | KeyCode::End => self.pane_mut().move_line_end(),
+            KeyCode::Char('G') => self.pane_mut().move_file_end(),
+            KeyCode::Char('g') => {
+                // gg in visual (single keypress is fine here — no ambiguity needed)
+                self.pane_mut().move_file_start();
+            }
+            // Operators on selection
+            KeyCode::Char('d') | KeyCode::Char('x') => {
+                let anchor = self.visual_anchor.unwrap_or((self.pane().cursor_row, self.pane().cursor_col));
+                let cursor = (self.pane().cursor_row, self.pane().cursor_col);
+                if line_wise {
+                    let removed = self.pane_mut().delete_lines(anchor.0, cursor.0);
+                    self.register = removed;
+                } else {
+                    let removed = self.pane_mut().delete_char_selection(anchor, cursor);
+                    self.register = removed;
+                }
+                self.mode = Mode::Normal;
+                self.visual_anchor = None;
+            }
+            KeyCode::Char('y') => {
+                let anchor = self.visual_anchor.unwrap_or((self.pane().cursor_row, self.pane().cursor_col));
+                let cursor_row = self.pane().cursor_row;
+                if line_wise {
+                    self.register = self.pane().yank_lines(anchor.0, cursor_row);
+                } else {
+                    // Char-wise yank: collect the text (simplified to full lines)
+                    self.register = self.pane().yank_lines(anchor.0, cursor_row);
+                }
+                self.message = Some(format!("{} lines yanked", self.register.len()));
+                self.mode = Mode::Normal;
+                self.visual_anchor = None;
+            }
+            // Toggle between V and v
+            KeyCode::Char('v') if line_wise => {
+                let (r, c) = (self.pane().cursor_row, self.pane().cursor_col);
+                self.visual_anchor = Some((r, c));
+                self.mode = Mode::Visual { line_wise: false };
+            }
+            KeyCode::Char('V') if !line_wise => {
+                let r = self.pane().cursor_row;
+                self.visual_anchor = Some((r, 0));
+                self.mode = Mode::Visual { line_wise: true };
+            }
+            _ => {}
         }
-        self.clamp_col();
-        self.modified = true;
     }
 
-    fn yank_line(&mut self) {
-        if let Some(line) = self.lines.get(self.cursor_row) {
-            self.register = vec![line.clone()];
-        }
-        self.message = Some("1 line yanked".into());
-    }
+    // ── Window management ─────────────────────────────────────────────────────
 
-    fn paste_after(&mut self) {
-        if self.register.is_empty() {
+    fn split(&mut self, layout: SplitLayout) {
+        if self.panes.len() >= 2 {
+            self.message = Some("At most 2 panes supported".into());
             return;
         }
-        for (i, line) in self.register.iter().enumerate() {
-            self.lines.insert(self.cursor_row + 1 + i, line.clone());
-        }
-        self.cursor_row += 1;
-        self.modified = true;
+        let new_pane = match &self.panes[self.active_pane].file_path {
+            Some(p) => Pane::from_file(p.to_str().unwrap_or("")).unwrap_or_else(|_| Pane::empty()),
+            None => Pane::empty(),
+        };
+        self.panes.push(new_pane);
+        self.layout = layout;
+        self.active_pane = 1; // focus the new pane
     }
 
-    fn paste_before(&mut self) {
-        if self.register.is_empty() {
+    fn close_active_pane(&mut self) {
+        if self.panes.len() == 1 {
+            // Last pane — quit
+            if self.panes[0].modified {
+                self.message = Some("Unsaved changes — :q! or :wq".into());
+            } else {
+                self.should_quit = true;
+            }
             return;
         }
-        for (i, line) in self.register.iter().enumerate() {
-            self.lines.insert(self.cursor_row + i, line.clone());
+        self.panes.remove(self.active_pane);
+        self.layout = SplitLayout::Single;
+        self.active_pane = 0;
+    }
+
+    fn cycle_pane(&mut self) {
+        if self.panes.len() > 1 {
+            self.active_pane = (self.active_pane + 1) % self.panes.len();
         }
-        self.modified = true;
+    }
+
+    fn focus_pane(&mut self, dir: PaneDir) {
+        if self.panes.len() < 2 {
+            return;
+        }
+        match (&self.layout, dir) {
+            // Horizontal split: panes stacked, navigate up/down
+            (SplitLayout::Horizontal, PaneDir::Down) => self.active_pane = 1,
+            (SplitLayout::Horizontal, PaneDir::Up) => self.active_pane = 0,
+            // Vertical split: panes side by side, navigate left/right
+            (SplitLayout::Vertical, PaneDir::Right) => self.active_pane = 1,
+            (SplitLayout::Vertical, PaneDir::Left) => self.active_pane = 0,
+            _ => {}
+        }
     }
 
     // ── File I/O ──────────────────────────────────────────────────────────────
 
-    fn save(&mut self) {
-        match &self.file_path {
-            None => {
-                self.message = Some("No file name — use :w <filename>".into());
-            }
-            Some(path) => {
-                let content = self.lines.join("\n") + "\n";
-                match std::fs::write(path, content) {
-                    Ok(_) => {
-                        self.modified = false;
-                        let name = path.display().to_string();
-                        self.message = Some(format!("\"{}\" written", name));
-                    }
-                    Err(e) => {
-                        self.message = Some(format!("Error writing file: {}", e));
-                    }
-                }
-            }
+    fn save_active(&mut self) {
+        match self.panes[self.active_pane].save() {
+            Ok(msg) => self.message = Some(msg),
+            Err(e) => self.message = Some(e),
         }
     }
 
-    // ── Viewport ──────────────────────────────────────────────────────────────
+    // ── Visual selection query (used by ui.rs) ────────────────────────────────
 
-    /// Adjust `viewport_top` so that `cursor_row` is visible within `height` lines.
-    pub fn scroll_to_cursor(&mut self, height: usize) {
-        if height == 0 {
-            return;
-        }
-        if self.cursor_row < self.viewport_top {
-            self.viewport_top = self.cursor_row;
-        } else if self.cursor_row >= self.viewport_top + height {
-            self.viewport_top = self.cursor_row - height + 1;
-        }
+    /// Returns `Some((start_row, start_col, end_row, end_col, line_wise))` when
+    /// a visual selection is active, with start ≤ end guaranteed.
+    pub fn visual_selection(&self) -> Option<(usize, usize, usize, usize, bool)> {
+        let line_wise = match self.mode {
+            Mode::Visual { line_wise } => line_wise,
+            _ => return None,
+        };
+        let (ar, ac) = self.visual_anchor?;
+        let pane = self.pane();
+        let (cr, cc) = (pane.cursor_row, pane.cursor_col);
+        let ((sr, sc), (er, ec)) = if (ar, ac) <= (cr, cc) {
+            ((ar, ac), (cr, cc))
+        } else {
+            ((cr, cc), (ar, ac))
+        };
+        Some((sr, sc, er, ec, line_wise))
     }
 }

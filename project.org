@@ -33,15 +33,24 @@
 ** DONE render text with org-mode syntax highlighting (headings, bold, etc.)
 ** DONE implement normal mode with basic movement (h j k l, w b e, 0 $, gg G)
 ** DONE implement insert mode (i, a, o, O, <Esc>)
-** TODO implement visual mode (v, V, line selection)
+** DONE implement visual mode (v, V, line selection)
 ** TODO implement operator + motion pattern (d, y, c combined with motions)
 ** DONE implement delete line (dd), yank line (yy), paste (p, P)
 ** TODO implement undo / redo (u, C-r)
 ** DONE implement command mode (:w, :q, :wq, :e <file>)
 ** DONE implement status bar (mode indicator, filename, cursor position)
 ** DONE implement file open from CLI argument
-** TODO implement file picker (when no argument given, list .org files)
+** TODO implement file picker / fuzzy open (SPC f f)
 ** DONE handle unsaved changes prompt on quit
+** DONE mouse click to move cursor
+** DONE window splitting (C-w s/v/w/q/hjkl, :sp, :vsplit, SPC w …)
+** DONE space / doom-emacs leader keybindings (SPC f s, SPC w …, SPC q q)
+** DONE which-key hint in cmdline after prefix keys
+** DONE per-part heading colors: stars dim, TODO keyword, priority, tags dim
+** TODO which-key floating popup (overlay showing keys after a prefix)
+** TODO operator + motion (d<motion>, y<motion>, c<motion>)
+** TODO more split layouts (3+ panes)
+** TODO buffer list / switcher (SPC b b)
 
 ** cli: binary entry point (cln)
 
