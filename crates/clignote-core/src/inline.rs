@@ -134,7 +134,13 @@ fn try_link(chars: &[char], start: usize) -> Option<(Link, usize)> {
         return None;
     }
     match chars[i] {
-        ']' => Some((Link { url, description: None }, i + 1)),
+        ']' => Some((
+            Link {
+                url,
+                description: None,
+            },
+            i + 1,
+        )),
         '[' => {
             i += 1;
             let desc_start = i;
@@ -149,7 +155,13 @@ fn try_link(chars: &[char], start: usize) -> Option<(Link, usize)> {
             if i >= chars.len() || chars[i] != ']' {
                 return None;
             }
-            Some((Link { url, description: Some(desc) }, i + 1))
+            Some((
+                Link {
+                    url,
+                    description: Some(desc),
+                },
+                i + 1,
+            ))
         }
         _ => None,
     }
@@ -202,7 +214,13 @@ fn try_inactive_timestamp(chars: &[char], start: usize) -> Option<(Timestamp, us
         && b[7] == b'-'
         && b[8..10].iter().all(|c| c.is_ascii_digit())
     {
-        Some((Timestamp { kind: TimestampKind::Inactive, inner }, i + 1))
+        Some((
+            Timestamp {
+                kind: TimestampKind::Inactive,
+                inner,
+            },
+            i + 1,
+        ))
     } else {
         None
     }
@@ -242,14 +260,20 @@ mod tests {
 
     #[test]
     fn verbatim() {
-        assert_eq!(parse_inline("=verb="), vec![Inline::Verbatim("verb".into())]);
+        assert_eq!(
+            parse_inline("=verb="),
+            vec![Inline::Verbatim("verb".into())]
+        );
     }
 
     #[test]
     fn link_bare() {
         assert_eq!(
             parse_inline("[[https://example.com]]"),
-            vec![Inline::Link(Link { url: "https://example.com".into(), description: None })]
+            vec![Inline::Link(Link {
+                url: "https://example.com".into(),
+                description: None
+            })]
         );
     }
 

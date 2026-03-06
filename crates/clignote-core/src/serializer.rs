@@ -22,7 +22,11 @@ pub fn serialize(doc: &Document) -> String {
 fn serialize_section(out: &mut String, section: &Section) {
     if let Some(h) = &section.headline {
         let stars = "*".repeat(h.level as usize);
-        let kw = h.todo_keyword.as_deref().map(|k| format!("{} ", k)).unwrap_or_default();
+        let kw = h
+            .todo_keyword
+            .as_deref()
+            .map(|k| format!("{} ", k))
+            .unwrap_or_default();
         let pri = h.priority.map(|p| format!("[#{}] ", p)).unwrap_or_default();
         let title = serialize_inlines(&h.title);
         let tags = if h.tags.is_empty() {
@@ -88,7 +92,12 @@ fn serialize_block(out: &mut String, block: &Block) {
                     Some(CheckboxState::Partial) => "[-] ",
                     None => "",
                 };
-                out.push_str(&format!("{} {}{}\n", item.bullet, cb, serialize_inlines(&item.content)));
+                out.push_str(&format!(
+                    "{} {}{}\n",
+                    item.bullet,
+                    cb,
+                    serialize_inlines(&item.content)
+                ));
             }
         }
     }

@@ -47,7 +47,10 @@ pub enum Block {
     SrcBlock(SrcBlock),
     PropertyDrawer(Vec<Property>),
     /// A named drawer other than PROPERTIES (e.g. LOGBOOK).
-    Drawer { name: String, lines: Vec<String> },
+    Drawer {
+        name: String,
+        lines: Vec<String>,
+    },
     HorizontalRule,
     BlankLine,
 }

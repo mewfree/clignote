@@ -14,7 +14,11 @@ impl Pane {
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
-        let lines = if lines.is_empty() { vec![String::new()] } else { lines };
+        let lines = if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+        };
         Ok(Self {
             lines,
             cursor_row: 0,
@@ -39,7 +43,10 @@ impl Pane {
     // ── Geometry ──────────────────────────────────────────────────────────────
 
     pub fn current_line_len(&self) -> usize {
-        self.lines.get(self.cursor_row).map(|l| l.len()).unwrap_or(0)
+        self.lines
+            .get(self.cursor_row)
+            .map(|l| l.len())
+            .unwrap_or(0)
     }
 
     pub fn clamp_col(&mut self) {
@@ -205,7 +212,8 @@ impl Pane {
 
         // Remove lines sr..=er and replace with joined result
         self.lines.drain(sr..=er);
-        self.lines.insert(sr, format!("{}{}", start_prefix, end_suffix));
+        self.lines
+            .insert(sr, format!("{}{}", start_prefix, end_suffix));
         if self.lines.is_empty() {
             self.lines.push(String::new());
         }

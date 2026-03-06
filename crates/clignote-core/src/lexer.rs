@@ -2,11 +2,20 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum LineToken {
     /// `* Title`, `** Title`, …
-    Headline { level: u8, rest: String },
+    Headline {
+        level: u8,
+        rest: String,
+    },
     /// `#+KEY: VALUE` (not a block keyword)
-    Keyword { key: String, value: String },
+    Keyword {
+        key: String,
+        value: String,
+    },
     /// `#+begin_KIND params`
-    BeginBlock { kind: String, params: String },
+    BeginBlock {
+        kind: String,
+        params: String,
+    },
     /// `#+end_KIND`
     EndBlock(String),
     /// `:NAME:` on its own line (drawer open)
@@ -14,9 +23,16 @@ pub enum LineToken {
     /// `:END:`
     DrawerEnd,
     /// `:KEY: VALUE` (property inside a drawer)
-    DrawerProperty { key: String, value: String },
+    DrawerProperty {
+        key: String,
+        value: String,
+    },
     /// `- text`, `+ text`, `1. text`, …
-    ListItem { indent: usize, bullet: String, rest: String },
+    ListItem {
+        indent: usize,
+        bullet: String,
+        rest: String,
+    },
     HorizontalRule,
     Blank,
     /// Any other text line.
@@ -46,7 +62,9 @@ pub fn tokenize_line(line: &str) -> LineToken {
         // #+begin_KIND [PARAMS]  — no colon; split by first whitespace
         if rest.to_lowercase().starts_with("begin_") {
             let after = &rest["begin_".len()..]; // e.g. "src rust"
-            let kind_len = after.find(|c: char| c.is_ascii_whitespace()).unwrap_or(after.len());
+            let kind_len = after
+                .find(|c: char| c.is_ascii_whitespace())
+                .unwrap_or(after.len());
             let kind = after[..kind_len].to_uppercase();
             let params = after[kind_len..].trim().to_string();
             return LineToken::BeginBlock { kind, params };
@@ -65,7 +83,11 @@ pub fn tokenize_line(line: &str) -> LineToken {
         // #+KEY: VALUE
         let colon = rest.find(':').unwrap_or(rest.len());
         let key = &rest[..colon];
-        let value = if colon < rest.len() { rest[colon + 1..].trim() } else { "" };
+        let value = if colon < rest.len() {
+            rest[colon + 1..].trim()
+        } else {
+            ""
+        };
         return LineToken::Keyword {
             key: key.to_string(),
             value: value.to_string(),
@@ -82,7 +104,11 @@ pub fn tokenize_line(line: &str) -> LineToken {
         if let Some(close) = trimmed[1..].find(':') {
             let name = &trimmed[1..1 + close];
             let after = trimmed[1 + close + 1..].trim();
-            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
                 if after.is_empty() {
                     return LineToken::DrawerBegin(name.to_string());
                 } else {
@@ -139,7 +165,10 @@ mod tests {
     fn heading_level_1() {
         assert_eq!(
             tokenize_line("* Hello"),
-            LineToken::Headline { level: 1, rest: "Hello".into() }
+            LineToken::Headline {
+                level: 1,
+                rest: "Hello".into()
+            }
         );
     }
 
@@ -147,7 +176,10 @@ mod tests {
     fn heading_level_3() {
         assert_eq!(
             tokenize_line("*** Deep"),
-            LineToken::Headline { level: 3, rest: "Deep".into() }
+            LineToken::Headline {
+                level: 3,
+                rest: "Deep".into()
+            }
         );
     }
 
@@ -155,7 +187,10 @@ mod tests {
     fn keyword_line() {
         assert_eq!(
             tokenize_line("#+title: My Doc"),
-            LineToken::Keyword { key: "title".into(), value: "My Doc".into() }
+            LineToken::Keyword {
+                key: "title".into(),
+                value: "My Doc".into()
+            }
         );
     }
 
@@ -163,18 +198,27 @@ mod tests {
     fn begin_src() {
         assert_eq!(
             tokenize_line("#+begin_src rust"),
-            LineToken::BeginBlock { kind: "SRC".into(), params: "rust".into() }
+            LineToken::BeginBlock {
+                kind: "SRC".into(),
+                params: "rust".into()
+            }
         );
     }
 
     #[test]
     fn end_src() {
-        assert_eq!(tokenize_line("#+end_src"), LineToken::EndBlock("SRC".into()));
+        assert_eq!(
+            tokenize_line("#+end_src"),
+            LineToken::EndBlock("SRC".into())
+        );
     }
 
     #[test]
     fn drawer_begin() {
-        assert_eq!(tokenize_line(":PROPERTIES:"), LineToken::DrawerBegin("PROPERTIES".into()));
+        assert_eq!(
+            tokenize_line(":PROPERTIES:"),
+            LineToken::DrawerBegin("PROPERTIES".into())
+        );
     }
 
     #[test]
@@ -186,7 +230,10 @@ mod tests {
     fn property_line() {
         assert_eq!(
             tokenize_line(":CREATED: 2026-03-05"),
-            LineToken::DrawerProperty { key: "CREATED".into(), value: "2026-03-05".into() }
+            LineToken::DrawerProperty {
+                key: "CREATED".into(),
+                value: "2026-03-05".into()
+            }
         );
     }
 
@@ -194,7 +241,11 @@ mod tests {
     fn list_unordered() {
         assert_eq!(
             tokenize_line("- item"),
-            LineToken::ListItem { indent: 0, bullet: "-".into(), rest: "item".into() }
+            LineToken::ListItem {
+                indent: 0,
+                bullet: "-".into(),
+                rest: "item".into()
+            }
         );
     }
 
@@ -202,7 +253,11 @@ mod tests {
     fn list_ordered() {
         assert_eq!(
             tokenize_line("1. first"),
-            LineToken::ListItem { indent: 0, bullet: "1.".into(), rest: "first".into() }
+            LineToken::ListItem {
+                indent: 0,
+                bullet: "1.".into(),
+                rest: "first".into()
+            }
         );
     }
 

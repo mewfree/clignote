@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
+    Frame,
 };
 
 use crate::app::{App, Mode, SplitLayout};
@@ -17,7 +17,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Reserve bottom two rows for status + command line
     let main_and_bars = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     let editor_area = main_and_bars[0];
@@ -49,7 +53,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Render each pane
     for (i, &rect) in pane_rects.iter().enumerate() {
         let is_active = i == app.active_pane;
-        let visual_sel = if is_active { app.visual_selection() } else { None };
+        let visual_sel = if is_active {
+            app.visual_selection()
+        } else {
+            None
+        };
         let mode = if is_active { &app.mode } else { &Mode::Normal };
         render_pane(frame, &mut app.panes[i], rect, is_active, visual_sel, mode);
     }
@@ -146,11 +154,7 @@ fn build_line(
         }
 
         // Block cursor overlay (Normal / Command / Visual modes)
-        if is_active
-            && row == cursor_row
-            && i == cursor_col
-            && !matches!(mode, Mode::Insert)
-        {
+        if is_active && row == cursor_row && i == cursor_col && !matches!(mode, Mode::Insert) {
             style = Style::default().bg(Color::White).fg(Color::Black);
         }
 
@@ -226,7 +230,9 @@ fn org_styles(line: &str) -> Vec<Style> {
 
     // ── Drawer / property lines ───────────────────────────────────────────────
     if line.starts_with(':') {
-        let s = Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+        let s = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC);
         styles.iter_mut().for_each(|st| *st = s);
         return styles;
     }
@@ -234,7 +240,9 @@ fn org_styles(line: &str) -> Vec<Style> {
     // ── List bullets ─────────────────────────────────────────────────────────
     if let Some(first_non_space) = chars.iter().position(|&c| c != ' ') {
         if matches!(chars[first_non_space], '-' | '+') {
-            styles[first_non_space] = Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD);
+            styles[first_non_space] = Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD);
         }
     }
 
@@ -245,7 +253,9 @@ fn style_heading(chars: &[char], styles: &mut [Style], star_count: usize) {
     let n = chars.len();
     let level_color = heading_color(star_count);
     let dim = Style::default().fg(Color::DarkGray);
-    let title_style = Style::default().fg(level_color).add_modifier(Modifier::BOLD);
+    let title_style = Style::default()
+        .fg(level_color)
+        .add_modifier(Modifier::BOLD);
 
     // Stars: dimmed
     for i in 0..star_count.min(n) {
@@ -292,11 +302,7 @@ fn style_heading(chars: &[char], styles: &mut [Style], star_count: usize) {
     }
 
     // Priority [#A] / [#B] / [#C]
-    if pos + 4 <= n
-        && chars[pos] == '['
-        && chars[pos + 1] == '#'
-        && chars[pos + 3] == ']'
-    {
+    if pos + 4 <= n && chars[pos] == '[' && chars[pos + 1] == '#' && chars[pos + 3] == ']' {
         let p = chars[pos + 2];
         let pri_color = match p {
             'A' => Color::LightRed,
@@ -408,10 +414,22 @@ fn heading_color(level: usize) -> Color {
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     let mode_style = match app.mode {
-        Mode::Normal => Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD),
-        Mode::Insert => Style::default().bg(Color::Green).fg(Color::Black).add_modifier(Modifier::BOLD),
-        Mode::Command => Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD),
-        Mode::Visual { .. } => Style::default().bg(Color::Magenta).fg(Color::White).add_modifier(Modifier::BOLD),
+        Mode::Normal => Style::default()
+            .bg(Color::Blue)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+        Mode::Insert => Style::default()
+            .bg(Color::Green)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+        Mode::Command => Style::default()
+            .bg(Color::Yellow)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+        Mode::Visual { .. } => Style::default()
+            .bg(Color::Magenta)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
     };
 
     let pane = app.pane();

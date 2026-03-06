@@ -69,15 +69,7 @@ fn exact_match(s: &str) -> Option<Action> {
 }
 
 const KNOWN_PREFIXES: &[&str] = &[
-    "g",
-    "d",
-    "y",
-    "C-w",
-    "SPC",
-    "SPC f",
-    "SPC w",
-    "SPC b",
-    "SPC q",
+    "g", "d", "y", "C-w", "SPC", "SPC f", "SPC w", "SPC b", "SPC q",
 ];
 
 pub fn match_seq(seq_str: &str) -> MatchResult {

@@ -5,7 +5,10 @@ use crate::lexer::{tokenize_line, LineToken};
 /// Parse an org-mode string into a `Document`.
 pub fn parse(input: &str) -> Document {
     let lines: Vec<&str> = input.lines().collect();
-    let mut p = Parser { lines: &lines, pos: 0 };
+    let mut p = Parser {
+        lines: &lines,
+        pos: 0,
+    };
     p.parse_document()
 }
 
@@ -55,7 +58,11 @@ impl<'a> Parser<'a> {
         }
 
         if !preamble.is_empty() {
-            doc.sections.push(Section { headline: None, content: preamble, children: vec![] });
+            doc.sections.push(Section {
+                headline: None,
+                content: preamble,
+                children: vec![],
+            });
         }
 
         // Consume top-level sections
@@ -107,7 +114,11 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Some(Section { headline, content, children })
+        Some(Section {
+            headline,
+            content,
+            children,
+        })
     }
 
     // ── Blocks ────────────────────────────────────────────────────────────────
@@ -207,7 +218,10 @@ impl<'a> Parser<'a> {
         if is_props {
             Some(Block::PropertyDrawer(properties))
         } else {
-            Some(Block::Drawer { name: name.to_string(), lines: raw_lines })
+            Some(Block::Drawer {
+                name: name.to_string(),
+                lines: raw_lines,
+            })
         }
     }
 
@@ -255,8 +269,15 @@ impl<'a> Parser<'a> {
 // ── Headline parsing ──────────────────────────────────────────────────────────
 
 /// Known TODO keywords. Extend as needed.
-const TODO_KEYWORDS: &[&str] =
-    &["TODO", "DONE", "DOING", "NEXT", "WAITING", "HOLD", "CANCELLED"];
+const TODO_KEYWORDS: &[&str] = &[
+    "TODO",
+    "DONE",
+    "DOING",
+    "NEXT",
+    "WAITING",
+    "HOLD",
+    "CANCELLED",
+];
 
 fn parse_headline(level: u8, rest: &str) -> Headline {
     let (title_and_tags, tags) = extract_tags(rest.trim());
@@ -270,7 +291,13 @@ fn parse_headline(level: u8, rest: &str) -> Headline {
     let (priority, s) = extract_priority(s);
     let s = s.trim_start();
 
-    Headline { level, todo_keyword, priority, title: parse_inline(s), tags }
+    Headline {
+        level,
+        todo_keyword,
+        priority,
+        title: parse_inline(s),
+        tags,
+    }
 }
 
 fn extract_todo_keyword(s: &str) -> (Option<String>, &str) {
@@ -367,7 +394,10 @@ fn is_tag_char(c: char) -> bool {
 // ── List checkbox ─────────────────────────────────────────────────────────────
 
 fn parse_checkbox(rest: &str) -> (Option<CheckboxState>, String) {
-    if let Some(s) = rest.strip_prefix("[X] ").or_else(|| rest.strip_prefix("[x] ")) {
+    if let Some(s) = rest
+        .strip_prefix("[X] ")
+        .or_else(|| rest.strip_prefix("[x] "))
+    {
         return (Some(CheckboxState::Checked), s.to_string());
     }
     if let Some(s) = rest.strip_prefix("[ ] ") {
@@ -399,8 +429,20 @@ mod tests {
     #[test]
     fn parse_keywords() {
         let doc = parse("#+title: My File\n#+author: Damien\n");
-        assert_eq!(doc.keywords[0], Keyword { key: "title".into(), value: "My File".into() });
-        assert_eq!(doc.keywords[1], Keyword { key: "author".into(), value: "Damien".into() });
+        assert_eq!(
+            doc.keywords[0],
+            Keyword {
+                key: "title".into(),
+                value: "My File".into()
+            }
+        );
+        assert_eq!(
+            doc.keywords[1],
+            Keyword {
+                key: "author".into(),
+                value: "Damien".into()
+            }
+        );
     }
 
     #[test]
