@@ -47,6 +47,7 @@
 ** DONE space / doom-emacs leader keybindings (SPC f s, SPC w …, SPC q q)
 ** DONE which-key hint in cmdline after prefix keys
 ** DONE per-part heading colors: stars dim, TODO keyword, priority, tags dim
+** DONE render links: [[url]] and [[url][desc]] styled (dim brackets, cyan desc)
 ** TODO which-key floating popup (overlay showing keys after a prefix)
 ** TODO operator + motion (d<motion>, y<motion>, c<motion>)
 ** TODO more split layouts (3+ panes)

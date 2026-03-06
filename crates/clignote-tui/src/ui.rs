@@ -237,6 +237,10 @@ fn org_styles(line: &str) -> Vec<Style> {
         return styles;
     }
 
+    // ── Inline markup ─────────────────────────────────────────────────────────
+    apply_link_styles(&chars, &mut styles);
+    apply_strikethrough(&chars, &mut styles);
+
     // ── List bullets & checkboxes ─────────────────────────────────────────────
     if let Some(first_non_space) = chars.iter().position(|&c| c != ' ') {
         if matches!(chars[first_non_space], '-' | '+') {
@@ -262,6 +266,136 @@ fn org_styles(line: &str) -> Vec<Style> {
     }
 
     styles
+}
+
+/// Style `[[url]]` and `[[url][desc]]` link spans.
+///
+/// Bracket delimiters and the URL are dimmed; the description (or bare URL)
+/// is rendered cyan + underlined so it stands out as a clickable reference.
+fn apply_link_styles(chars: &[char], styles: &mut [Style]) {
+    let n = chars.len();
+    let dim = Style::default().fg(Color::DarkGray);
+    let url_style = Style::default().fg(Color::DarkGray);
+    let desc_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::UNDERLINED);
+
+    let mut i = 0;
+    while i + 1 < n {
+        // Find opening "[["
+        if chars[i] != '[' || chars[i + 1] != '[' {
+            i += 1;
+            continue;
+        }
+        let link_start = i;
+        i += 2; // skip "[["
+
+        // Collect URL until ']' or end
+        let url_start = i;
+        while i < n && chars[i] != ']' {
+            i += 1;
+        }
+        if i >= n {
+            break;
+        }
+        let url_end = i; // points at ']'
+
+        i += 1; // skip first ']'
+        if i >= n {
+            break;
+        }
+
+        if chars[i] == ']' {
+            // Form: [[url]]
+            let link_end = i; // points at closing ']'
+                              // Style: "[[" dim, url = desc_style, "]]" dim
+            styles[link_start] = dim;
+            styles[link_start + 1] = dim;
+            for k in url_start..url_end {
+                styles[k] = desc_style;
+            }
+            styles[url_end] = dim;
+            styles[link_end] = dim;
+            i += 1;
+        } else if chars[i] == '[' {
+            // Form: [[url][desc]]
+            let sep_open = i; // '['
+            i += 1;
+            let desc_start = i;
+            while i < n && chars[i] != ']' {
+                i += 1;
+            }
+            if i >= n {
+                break;
+            }
+            let desc_end = i; // first ']' of "]]"
+            i += 1;
+            if i >= n || chars[i] != ']' {
+                continue;
+            }
+            let link_end = i;
+
+            // Style: "[[" dim, url dim, "][" dim, desc cyan+underline, "]]" dim
+            styles[link_start] = dim;
+            styles[link_start + 1] = dim;
+            for k in url_start..url_end {
+                styles[k] = url_style;
+            }
+            styles[url_end] = dim; // ']' before '['
+            styles[sep_open] = dim; // '['
+            for k in desc_start..desc_end {
+                styles[k] = desc_style;
+            }
+            styles[desc_end] = dim;
+            styles[link_end] = dim;
+            i += 1;
+        }
+    }
+}
+
+/// Apply `CROSSED_OUT` styling to `+text+` spans in a line.
+/// Follows org-mode rules: opener must not be preceded by alphanumeric and must
+/// not be followed by whitespace; closer must not be preceded by whitespace and
+/// must not be followed by alphanumeric.
+fn apply_strikethrough(chars: &[char], styles: &mut [Style]) {
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        if chars[i] != '+' {
+            i += 1;
+            continue;
+        }
+        let pre_ok = i == 0 || !chars[i - 1].is_alphanumeric();
+        let content_start = i + 1;
+        if !pre_ok || content_start >= n || chars[content_start].is_whitespace() {
+            i += 1;
+            continue;
+        }
+        // Search for closing '+'
+        let mut j = content_start + 1;
+        let mut found = false;
+        while j < n {
+            if chars[j] == '+' && !chars[j - 1].is_whitespace() {
+                let post_ok = j + 1 >= n || !chars[j + 1].is_alphanumeric();
+                if post_ok {
+                    found = true;
+                    break;
+                }
+            }
+            j += 1;
+        }
+        if found {
+            let strike_style = Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::CROSSED_OUT);
+            for k in i..=j {
+                styles[k] = strike_style;
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
 }
 
 fn style_heading(chars: &[char], styles: &mut [Style], star_count: usize) {
