@@ -292,6 +292,64 @@ impl Pane {
 
     // ── Org-mode helpers ──────────────────────────────────────────────────────
 
+    /// Return the URL of the `[[url]]` or `[[url][desc]]` link under the cursor,
+    /// or `None` if the cursor is not inside a link.
+    pub fn link_at_cursor(&self) -> Option<String> {
+        let line = self.lines.get(self.cursor_row)?;
+        let col = self.cursor_col;
+        let b = line.as_bytes();
+        let n = b.len();
+        let mut i = 0;
+        while i + 1 < n {
+            if b[i] != b'[' || b[i + 1] != b'[' {
+                i += 1;
+                continue;
+            }
+            let link_start = i;
+            i += 2;
+            let url_start = i;
+            while i < n && b[i] != b']' {
+                i += 1;
+            }
+            if i >= n {
+                break;
+            }
+            let url_end = i;
+            let url = line[url_start..url_end].to_string();
+            i += 1; // skip ']'
+            if i >= n {
+                break;
+            }
+            let link_end = if b[i] == b']' {
+                // [[url]]
+                let end = i;
+                i += 1;
+                end
+            } else if b[i] == b'[' {
+                i += 1;
+                while i < n && b[i] != b']' {
+                    i += 1;
+                }
+                if i >= n {
+                    break;
+                }
+                i += 1; // skip ']'
+                if i >= n || b[i] != b']' {
+                    continue;
+                }
+                let end = i;
+                i += 1;
+                end
+            } else {
+                continue;
+            };
+            if col >= link_start && col <= link_end {
+                return Some(url);
+            }
+        }
+        None
+    }
+
     /// Toggle the checkbox on the current line if it is a list item with one.
     /// Cycles: `[ ]` → `[X]` → `[ ]`  (`[-]` also resets to `[ ]`).
     pub fn toggle_checkbox(&mut self) {

@@ -155,6 +155,22 @@ pub struct App {
     completions: Option<CompletionState>,
 }
 
+fn is_web_url(url: &str) -> bool {
+    url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("ftp://")
+        || url.starts_with("mailto:")
+}
+
+fn open_url(url: &str) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(opener).arg(url).spawn();
+}
+
 impl App {
     pub fn new(file_path: Option<&str>) -> anyhow::Result<Self> {
         let pane = match file_path {
@@ -333,7 +349,18 @@ impl App {
             }
 
             // ── Org-mode ──────────────────────────────────────────────────────
-            KeyCode::Enter => self.pane_mut().toggle_checkbox(),
+            KeyCode::Enter => {
+                if let Some(url) = self.pane().link_at_cursor() {
+                    if is_web_url(&url) {
+                        open_url(&url);
+                    } else {
+                        let path = url.strip_prefix("file:").unwrap_or(&url);
+                        self.open_file(path, false);
+                    }
+                } else {
+                    self.pane_mut().toggle_checkbox();
+                }
+            }
 
             // ── Misc ──────────────────────────────────────────────────────────
             KeyCode::Esc => {
