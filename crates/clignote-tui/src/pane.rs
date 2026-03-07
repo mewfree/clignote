@@ -8,6 +8,7 @@ pub struct Pane {
     pub viewport_top: usize,
     pub file_path: Option<PathBuf>,
     pub modified: bool,
+    undo_stack: Vec<(Vec<String>, usize, usize)>,
 }
 
 impl Pane {
@@ -26,6 +27,7 @@ impl Pane {
             viewport_top: 0,
             file_path: Some(PathBuf::from(path)),
             modified: false,
+            undo_stack: Vec::new(),
         })
     }
 
@@ -252,6 +254,39 @@ impl Pane {
     pub fn insert_char(&mut self, c: char) {
         self.lines[self.cursor_row].insert(self.cursor_col, c);
         self.cursor_col += 1;
+        self.modified = true;
+    }
+
+    /// Delete the character under the cursor (vim `x`).
+    pub fn delete_char_at_cursor(&mut self) {
+        let line = &mut self.lines[self.cursor_row];
+        if line.is_empty() {
+            return;
+        }
+        let col = self.cursor_col.min(line.len().saturating_sub(1));
+        line.remove(col);
+        self.cursor_col = col.min(self.lines[self.cursor_row].len().saturating_sub(1));
+        self.modified = true;
+    }
+
+    /// Delete from cursor to end of current word (vim `dw`).
+    pub fn delete_word(&mut self) {
+        let line = &self.lines[self.cursor_row];
+        let bytes = line.as_bytes();
+        let col = self.cursor_col;
+        if col >= bytes.len() {
+            return;
+        }
+        // Mirror move_word_forward: skip non-whitespace then whitespace
+        let mut end = col;
+        while end < bytes.len() && !bytes[end].is_ascii_whitespace() {
+            end += 1;
+        }
+        while end < bytes.len() && bytes[end].is_ascii_whitespace() {
+            end += 1;
+        }
+        self.lines[self.cursor_row].replace_range(col..end, "");
+        self.cursor_col = col.min(self.lines[self.cursor_row].len().saturating_sub(1));
         self.modified = true;
     }
 

@@ -305,6 +305,9 @@ impl App {
                 self.pane_mut().move_up(40);
             }
 
+            // ── Delete ───────────────────────────────────────────────────────
+            KeyCode::Char('x') => self.pane_mut().delete_char_at_cursor(),
+
             // ── Paste ────────────────────────────────────────────────────────
             KeyCode::Char('p') => {
                 let reg = self.register.clone();
@@ -380,6 +383,8 @@ impl App {
                 let line = self.pane_mut().delete_line();
                 self.register = vec![line];
             }
+            Action::DeleteWord => self.pane_mut().delete_word(),
+            Action::DeleteChar => self.pane_mut().delete_char_at_cursor(),
             Action::YankLine => {
                 let line = self.pane().yank_line();
                 self.register = vec![line];

@@ -15,6 +15,8 @@ pub enum Action {
     GoToFileStart,
     GoToFileEnd,
     DeleteLine,
+    DeleteWord,
+    DeleteChar,
     YankLine,
     SplitHorizontal,
     SplitVertical,
@@ -43,6 +45,7 @@ fn exact_match(s: &str) -> Option<Action> {
     match s {
         "g g" => Some(Action::GoToFileStart),
         "d d" => Some(Action::DeleteLine),
+        "d w" => Some(Action::DeleteWord),
         "y y" => Some(Action::YankLine),
         // Vim C-w window commands
         "C-w s" | "C-w C-s" => Some(Action::SplitHorizontal),
@@ -87,7 +90,7 @@ pub fn match_seq(seq_str: &str) -> MatchResult {
 pub fn hint_for_prefix(prefix: &str) -> &'static str {
     match prefix {
         "g" => "g: top of file",
-        "d" => "d: delete line",
+        "d" => "d: delete line  w: delete word",
         "y" => "y: yank line",
         "C-w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
         "SPC" => "f: file  w: window  b: buffer  q: quit",
