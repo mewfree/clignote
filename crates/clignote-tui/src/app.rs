@@ -305,6 +305,13 @@ impl App {
                 self.pane_mut().move_up(40);
             }
 
+            // ── Undo ─────────────────────────────────────────────────────────
+            KeyCode::Char('u') => {
+                if !self.pane_mut().undo() {
+                    self.message = Some("Already at oldest change".into());
+                }
+            }
+
             // ── Delete ───────────────────────────────────────────────────────
             KeyCode::Char('x') => self.pane_mut().delete_char_at_cursor(),
 

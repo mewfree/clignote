@@ -39,6 +39,7 @@ impl Pane {
             viewport_top: 0,
             file_path: None,
             modified: false,
+            undo_stack: Vec::new(),
         }
     }
 
@@ -136,10 +137,30 @@ impl Pane {
         self.clamp_col();
     }
 
+    // ── Undo ──────────────────────────────────────────────────────────────────
+
+    fn snapshot(&mut self) {
+        self.undo_stack
+            .push((self.lines.clone(), self.cursor_row, self.cursor_col));
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if let Some((lines, row, col)) = self.undo_stack.pop() {
+            self.lines = lines;
+            self.cursor_row = row;
+            self.cursor_col = col;
+            self.modified = true;
+            true
+        } else {
+            false
+        }
+    }
+
     // ── Editing ───────────────────────────────────────────────────────────────
 
     /// Delete the current line and return it. Leaves at least one line.
     pub fn delete_line(&mut self) -> String {
+        self.snapshot();
         if self.lines.len() == 1 {
             let removed = self.lines[0].clone();
             self.lines[0].clear();
@@ -158,6 +179,7 @@ impl Pane {
 
     /// Delete a range of lines (inclusive). Returns the removed lines.
     pub fn delete_lines(&mut self, start: usize, end: usize) -> Vec<String> {
+        self.snapshot();
         let start = start.min(self.lines.len().saturating_sub(1));
         let end = end.min(self.lines.len().saturating_sub(1));
         let (lo, hi) = (start.min(end), start.max(end));
@@ -178,6 +200,7 @@ impl Pane {
         (sr, sc): (usize, usize),
         (er, ec): (usize, usize),
     ) -> Vec<String> {
+        self.snapshot();
         let (sr, sc, er, ec) = if (sr, sc) <= (er, ec) {
             (sr, sc, er, ec)
         } else {
@@ -236,6 +259,7 @@ impl Pane {
     }
 
     pub fn paste_lines_after(&mut self, lines: &[String]) {
+        self.snapshot();
         let insert_at = self.cursor_row + 1;
         for (i, l) in lines.iter().enumerate() {
             self.lines.insert(insert_at + i, l.clone());
@@ -245,6 +269,7 @@ impl Pane {
     }
 
     pub fn paste_lines_before(&mut self, lines: &[String]) {
+        self.snapshot();
         for (i, l) in lines.iter().enumerate() {
             self.lines.insert(self.cursor_row + i, l.clone());
         }
@@ -252,6 +277,7 @@ impl Pane {
     }
 
     pub fn insert_char(&mut self, c: char) {
+        self.snapshot();
         self.lines[self.cursor_row].insert(self.cursor_col, c);
         self.cursor_col += 1;
         self.modified = true;
@@ -259,6 +285,7 @@ impl Pane {
 
     /// Delete the character under the cursor (vim `x`).
     pub fn delete_char_at_cursor(&mut self) {
+        self.snapshot();
         let line = &mut self.lines[self.cursor_row];
         if line.is_empty() {
             return;
@@ -271,6 +298,7 @@ impl Pane {
 
     /// Delete from cursor to end of current word (vim `dw`).
     pub fn delete_word(&mut self) {
+        self.snapshot();
         let line = &self.lines[self.cursor_row];
         let bytes = line.as_bytes();
         let col = self.cursor_col;
@@ -291,6 +319,7 @@ impl Pane {
     }
 
     pub fn delete_char_before(&mut self) {
+        self.snapshot();
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
             self.lines[self.cursor_row].remove(self.cursor_col);
@@ -305,6 +334,7 @@ impl Pane {
     }
 
     pub fn insert_newline(&mut self) {
+        self.snapshot();
         let rest = self.lines[self.cursor_row].split_off(self.cursor_col);
         self.cursor_row += 1;
         self.lines.insert(self.cursor_row, rest);
@@ -313,6 +343,7 @@ impl Pane {
     }
 
     pub fn open_line_below(&mut self) {
+        self.snapshot();
         self.lines.insert(self.cursor_row + 1, String::new());
         self.cursor_row += 1;
         self.cursor_col = 0;
@@ -320,6 +351,7 @@ impl Pane {
     }
 
     pub fn open_line_above(&mut self) {
+        self.snapshot();
         self.lines.insert(self.cursor_row, String::new());
         self.cursor_col = 0;
         self.modified = true;
@@ -412,6 +444,7 @@ impl Pane {
             return;
         };
 
+        self.snapshot();
         self.lines[self.cursor_row].replace_range(after_bullet..after_bullet + 3, new_cb);
         self.modified = true;
     }
