@@ -248,14 +248,9 @@ impl<'a> Parser<'a> {
     fn parse_paragraph(&mut self) -> Option<Block> {
         let mut lines: Vec<Vec<Inline>> = Vec::new();
 
-        loop {
-            match self.peek_token() {
-                Some(LineToken::Text(s)) => {
-                    lines.push(parse_inline(&s));
-                    self.advance();
-                }
-                _ => break,
-            }
+        while let Some(LineToken::Text(s)) = self.peek_token() {
+            lines.push(parse_inline(&s));
+            self.advance();
         }
 
         if lines.is_empty() {

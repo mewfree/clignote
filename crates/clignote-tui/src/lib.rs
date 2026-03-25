@@ -1,4 +1,5 @@
 pub mod app;
+pub mod git;
 pub mod keymap;
 pub mod pane;
 pub mod ui;

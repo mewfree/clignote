@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Mode, SplitLayout};
+use crate::git::LineStatus;
 use crate::pane::Pane;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -84,7 +85,34 @@ fn render_pane(
 ) {
     let height = area.height as usize;
     pane.scroll_to_cursor(height);
+    pane.recompute_git_diff();
 
+    // Split off a 1-column gutter on the left for git status marks.
+    const GUTTER: u16 = 1;
+    let (gutter_area, content_area) = if area.width > GUTTER {
+        (
+            Rect::new(area.x, area.y, GUTTER, area.height),
+            Rect::new(area.x + GUTTER, area.y, area.width - GUTTER, area.height),
+        )
+    } else {
+        (Rect::new(area.x, area.y, 0, 0), area)
+    };
+
+    // Render git gutter
+    let gutter_lines: Vec<Line> = (pane.viewport_top..pane.viewport_top + height)
+        .map(|row| {
+            let status = pane.git_diff.get(row).copied().unwrap_or_default();
+            let (ch, style) = match status {
+                LineStatus::Added => ('+', Style::default().fg(Color::Green)),
+                LineStatus::Modified => ('~', Style::default().fg(Color::Yellow)),
+                LineStatus::Unchanged => (' ', Style::default()),
+            };
+            Line::from(Span::styled(ch.to_string(), style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(gutter_lines), gutter_area);
+
+    // Render content
     let visible: Vec<Line> = (pane.viewport_top..pane.viewport_top + height)
         .map(|row| match pane.lines.get(row) {
             None => Line::default(),
@@ -100,12 +128,12 @@ fn render_pane(
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(visible), area);
+    frame.render_widget(Paragraph::new(visible), content_area);
 
     // Terminal cursor position (for blinking cursor in Insert)
     if is_active {
-        let screen_row = area.y + (pane.cursor_row - pane.viewport_top) as u16;
-        let screen_col = area.x + pane.cursor_col as u16;
+        let screen_row = content_area.y + (pane.cursor_row - pane.viewport_top) as u16;
+        let screen_col = content_area.x + pane.cursor_col as u16;
         frame.set_cursor_position((screen_col, screen_row));
     }
 }
@@ -252,9 +280,7 @@ fn org_styles(line: &str) -> Vec<Style> {
                     Some('-') => Style::default().fg(Color::Yellow),
                     _ => Style::default().fg(Color::DarkGray),
                 };
-                for i in cb_start..=(cb_start + 2).min(n.saturating_sub(1)) {
-                    styles[i] = cb_style;
-                }
+                styles[cb_start..=(cb_start + 2).min(n.saturating_sub(1))].fill(cb_style);
             }
         }
     }
@@ -305,9 +331,7 @@ fn apply_link_styles(chars: &[char], styles: &mut [Style]) {
                               // Style: "[[" dim, url = desc_style, "]]" dim
             styles[link_start] = dim;
             styles[link_start + 1] = dim;
-            for k in url_start..url_end {
-                styles[k] = desc_style;
-            }
+            styles[url_start..url_end].fill(desc_style);
             styles[url_end] = dim;
             styles[link_end] = dim;
             i += 1;
@@ -332,14 +356,10 @@ fn apply_link_styles(chars: &[char], styles: &mut [Style]) {
             // Style: "[[" dim, url dim, "][" dim, desc cyan+underline, "]]" dim
             styles[link_start] = dim;
             styles[link_start + 1] = dim;
-            for k in url_start..url_end {
-                styles[k] = url_style;
-            }
+            styles[url_start..url_end].fill(url_style);
             styles[url_end] = dim; // ']' before '['
             styles[sep_open] = dim; // '['
-            for k in desc_start..desc_end {
-                styles[k] = desc_style;
-            }
+            styles[desc_start..desc_end].fill(desc_style);
             styles[desc_end] = dim;
             styles[link_end] = dim;
             i += 1;
@@ -382,9 +402,7 @@ fn apply_strikethrough(chars: &[char], styles: &mut [Style]) {
             let strike_style = Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::CROSSED_OUT);
-            for k in i..=j {
-                styles[k] = strike_style;
-            }
+            styles[i..=j].fill(strike_style);
             i = j + 1;
         } else {
             i += 1;
@@ -401,9 +419,7 @@ fn style_heading(chars: &[char], styles: &mut [Style], star_count: usize) {
         .add_modifier(Modifier::BOLD);
 
     // Stars: dimmed
-    for i in 0..star_count.min(n) {
-        styles[i] = dim;
-    }
+    styles[..star_count.min(n)].fill(dim);
     // Space after stars
     if star_count < n {
         styles[star_count] = title_style;
@@ -431,9 +447,7 @@ fn style_heading(chars: &[char], styles: &mut [Style], star_count: usize) {
                 if bold {
                     kw_style = kw_style.add_modifier(Modifier::BOLD);
                 }
-                for i in pos..pos + kw_len {
-                    styles[i] = kw_style;
-                }
+                styles[pos..pos + kw_len].fill(kw_style);
                 pos += kw_len;
                 if pos < n && chars[pos] == ' ' {
                     styles[pos] = title_style;
@@ -454,9 +468,7 @@ fn style_heading(chars: &[char], styles: &mut [Style], star_count: usize) {
             _ => Color::White,
         };
         let pri_style = Style::default().fg(pri_color).add_modifier(Modifier::BOLD);
-        for i in pos..pos + 4 {
-            styles[i] = pri_style;
-        }
+        styles[pos..pos + 4].fill(pri_style);
         pos += 4;
         if pos < n && chars[pos] == ' ' {
             styles[pos] = title_style;
@@ -468,13 +480,9 @@ fn style_heading(chars: &[char], styles: &mut [Style], star_count: usize) {
     let tag_start = find_tags_char_col(chars, pos);
 
     // Title range
-    for i in pos..tag_start.min(n) {
-        styles[i] = title_style;
-    }
+    styles[pos..tag_start.min(n)].fill(title_style);
     // Tags range
-    for i in tag_start..n {
-        styles[i] = dim;
-    }
+    styles[tag_start..n].fill(dim);
 }
 
 /// Find the char index of the ':' that opens the trailing tag section,
@@ -528,7 +536,7 @@ fn find_tags_char_col(chars: &[char], from: usize) -> usize {
             let before_colon = chars[pos - 1];
             if before_colon == ' ' || before_colon == '\t' || pos - 1 < from {
                 // Found the opening ':' of the whole tag section
-                if pos - 1 >= from {
+                if pos > from {
                     return pos;
                 }
                 return n;

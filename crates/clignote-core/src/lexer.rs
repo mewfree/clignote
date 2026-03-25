@@ -49,10 +49,10 @@ pub fn tokenize_line(line: &str) -> LineToken {
     if line.starts_with('*') {
         let level = line.chars().take_while(|&c| c == '*').count();
         let after = &line[level..];
-        if after.starts_with(' ') {
+        if let Some(rest) = after.strip_prefix(' ') {
             return LineToken::Headline {
                 level: level as u8,
-                rest: after[1..].to_string(),
+                rest: rest.to_string(),
             };
         }
     }

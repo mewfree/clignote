@@ -50,7 +50,8 @@ fn path_completions(partial: &str) -> Vec<String> {
             }
             let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
             // Reconstruct the full path string to return
-            let completed = if search_dir == StdPathBuf::from(".") && !partial.starts_with("./") {
+            let completed = if search_dir == std::path::Path::new(".") && !partial.starts_with("./")
+            {
                 if is_dir {
                     format!("{}/", name)
                 } else {
@@ -257,12 +258,11 @@ impl App {
             MatchResult::Prefix => {
                 let hint = keymap::hint_for_prefix(&seq_str);
                 self.message = Some(format!("[{}]  {}", seq_str, hint));
-                return; // keep accumulating
+                // keep accumulating
             }
             MatchResult::Action(action) => {
                 self.key_seq.clear();
                 self.dispatch_action(action);
-                return;
             }
             MatchResult::NoMatch => {
                 let was_accumulating = self.key_seq.len() > 1;

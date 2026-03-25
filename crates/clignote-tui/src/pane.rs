@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::git::{self, LineStatus};
+
 /// One editor pane: its own buffer, cursor, and viewport.
 pub struct Pane {
     pub lines: Vec<String>,
@@ -8,6 +10,10 @@ pub struct Pane {
     pub viewport_top: usize,
     pub file_path: Option<PathBuf>,
     pub modified: bool,
+    /// Per-line diff status vs the committed HEAD version.
+    pub git_diff: Vec<LineStatus>,
+    /// HEAD content fetched on open/save; used for real-time in-memory diff.
+    head_lines: Option<Vec<String>>,
     undo_stack: Vec<(Vec<String>, usize, usize)>,
 }
 
@@ -20,13 +26,18 @@ impl Pane {
         } else {
             lines
         };
+        let file_path = PathBuf::from(path);
+        let head_lines = git::get_head_lines(&file_path);
+        let git_diff = git::diff_with_head(head_lines.as_ref(), &lines);
         Ok(Self {
             lines,
             cursor_row: 0,
             cursor_col: 0,
             viewport_top: 0,
-            file_path: Some(PathBuf::from(path)),
+            file_path: Some(file_path),
             modified: false,
+            git_diff,
+            head_lines,
             undo_stack: Vec::new(),
         })
     }
@@ -39,7 +50,23 @@ impl Pane {
             viewport_top: 0,
             file_path: None,
             modified: false,
+            git_diff: Vec::new(),
+            head_lines: None,
             undo_stack: Vec::new(),
+        }
+    }
+
+    /// Re-diff the current buffer against HEAD. Called from the render loop so
+    /// the gutter updates in real-time as the user types.
+    pub fn recompute_git_diff(&mut self) {
+        self.git_diff = git::diff_with_head(self.head_lines.as_ref(), &self.lines);
+    }
+
+    /// Re-fetch HEAD content from git (called after a successful save so that
+    /// a subsequent commit will reset the baseline correctly).
+    fn refresh_head_lines(&mut self) {
+        if let Some(path) = &self.file_path.clone() {
+            self.head_lines = git::get_head_lines(path);
         }
     }
 
@@ -428,7 +455,7 @@ impl Pane {
             indent + 2
         } else {
             let digits = tail.chars().take_while(|c| c.is_ascii_digit()).count();
-            if digits > 0 && tail.get(digits..).map_or(false, |s| s.starts_with(". ")) {
+            if digits > 0 && tail.get(digits..).is_some_and(|s| s.starts_with(". ")) {
                 indent + digits + 2
             } else {
                 return;
@@ -459,6 +486,7 @@ impl Pane {
                 std::fs::write(path, &content)
                     .map(|_| {
                         self.modified = false;
+                        self.refresh_head_lines();
                         format!("\"{}\" written", path.display())
                     })
                     .map_err(|e| format!("Error writing: {}", e))
