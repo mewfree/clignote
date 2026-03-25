@@ -217,8 +217,19 @@ impl App {
     }
 
     pub fn handle_mouse(&mut self, event: MouseEvent) {
-        if let MouseEventKind::Down(MouseButton::Left) = event.kind {
-            self.click_at(event.column as usize, event.row as usize);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.click_at(event.column as usize, event.row as usize);
+            }
+            MouseEventKind::ScrollDown => {
+                let pane = &mut self.panes[self.active_pane];
+                pane.scroll_down(3);
+            }
+            MouseEventKind::ScrollUp => {
+                let pane = &mut self.panes[self.active_pane];
+                pane.scroll_up(3);
+            }
+            _ => {}
         }
     }
 

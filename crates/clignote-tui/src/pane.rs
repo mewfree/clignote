@@ -95,6 +95,21 @@ impl Pane {
         }
     }
 
+    pub fn scroll_down(&mut self, n: usize) {
+        let max_top = self.lines.len().saturating_sub(1);
+        self.viewport_top = (self.viewport_top + n).min(max_top);
+        self.cursor_row = self.cursor_row.max(self.viewport_top);
+        if self.cursor_row >= self.lines.len() {
+            self.cursor_row = self.lines.len().saturating_sub(1);
+        }
+        self.clamp_col();
+    }
+
+    pub fn scroll_up(&mut self, n: usize) {
+        self.viewport_top = self.viewport_top.saturating_sub(n);
+        self.clamp_col();
+    }
+
     // ── Movement ──────────────────────────────────────────────────────────────
 
     pub fn move_left(&mut self) {
