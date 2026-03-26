@@ -15,14 +15,19 @@ use crate::pane::Pane;
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    // Reserve bottom row for status bar (command/message shown inline)
+    // Reserve bottom rows: status bar + cmdline (like NeoVim)
     let main_and_bars = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     let editor_area = main_and_bars[0];
     let status_area = main_and_bars[1];
+    let cmdline_area = main_and_bars[2];
 
     // Compute pane rects for this render pass and store them in App
     let pane_rects: Vec<Rect> = match app.layout {
@@ -71,6 +76,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     render_status(frame, app, status_area);
+    render_cmdline(frame, app, cmdline_area);
 }
 
 // ── Pane renderer ─────────────────────────────────────────────────────────────
@@ -609,17 +615,20 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray),
     );
 
-    let cmd_text = match app.mode {
-        Mode::Command => format!("  :{}", app.command_buf),
+    let bar = Paragraph::new(Line::from(vec![mode_span, file_span, pos_span]))
+        .style(Style::default().bg(Color::DarkGray));
+    frame.render_widget(bar, area);
+}
+
+fn render_cmdline(frame: &mut Frame, app: &App, area: Rect) {
+    let text = match app.mode {
+        Mode::Command => format!(":{}", app.command_buf),
         _ => app
             .message
             .as_deref()
-            .map(|m| format!("  {m}"))
+            .map(|m| m.to_string())
             .unwrap_or_default(),
     };
-    let cmd_span = Span::styled(cmd_text, Style::default().fg(Color::White));
-
-    let bar = Paragraph::new(Line::from(vec![mode_span, file_span, pos_span, cmd_span]))
-        .style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(bar, area);
+    let widget = Paragraph::new(text).style(Style::default().fg(Color::White));
+    frame.render_widget(widget, area);
 }
