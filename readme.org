@@ -6,6 +6,8 @@ A terminal-first text editor for org-mode files, with evil-mode (vim) keybinding
 
 ~cln~ is the CLI entry point.
 
+[[file:demo.gif]]
+
 ** goals
 
 - fast, distraction-free editing of org-mode files in the terminal
