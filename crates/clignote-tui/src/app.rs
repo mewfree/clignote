@@ -95,6 +95,7 @@ pub enum Mode {
     Normal,
     Insert,
     Command,
+    Search,
     /// `line_wise = true` → V (line visual), false → v (char visual)
     Visual {
         line_wise: bool,
@@ -107,6 +108,7 @@ impl Mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Command => "COMMAND",
+            Mode::Search => "SEARCH",
             Mode::Visual { line_wise: true } => "V-LINE",
             Mode::Visual { line_wise: false } => "VISUAL",
         }
@@ -154,6 +156,14 @@ pub struct App {
 
     /// Active tab-completion session (command mode only).
     completions: Option<CompletionState>,
+
+    // Search state
+    pub search_buf: String,
+    /// All (row, col) match positions in the active pane.
+    pub search_matches: Vec<(usize, usize)>,
+    pub search_match_idx: usize,
+    /// Cursor position at the moment `/` was pressed; restored on Esc.
+    search_origin: (usize, usize),
 }
 
 fn is_web_url(url: &str) -> bool {
@@ -191,6 +201,10 @@ impl App {
             should_quit: false,
             pane_rects: Vec::new(),
             completions: None,
+            search_buf: String::new(),
+            search_matches: Vec::new(),
+            search_match_idx: 0,
+            search_origin: (0, 0),
         })
     }
 
@@ -212,6 +226,7 @@ impl App {
             Mode::Normal => self.handle_normal(key),
             Mode::Insert => self.handle_insert(key),
             Mode::Command => self.handle_command(key),
+            Mode::Search => self.handle_search(key),
             Mode::Visual { line_wise } => self.handle_visual(key, *line_wise),
         }
     }
@@ -368,6 +383,15 @@ impl App {
                 self.command_buf.clear();
                 self.mode = Mode::Command;
             }
+            KeyCode::Char('/') => {
+                let (r, c) = (self.pane().cursor_row, self.pane().cursor_col);
+                self.search_origin = (r, c);
+                self.search_buf.clear();
+                self.search_matches.clear();
+                self.mode = Mode::Search;
+            }
+            KeyCode::Char('n') => self.next_search_match(),
+            KeyCode::Char('N') => self.prev_search_match(),
 
             // ── Org-mode ──────────────────────────────────────────────────────
             KeyCode::Enter => {
@@ -386,6 +410,7 @@ impl App {
             // ── Misc ──────────────────────────────────────────────────────────
             KeyCode::Esc => {
                 self.key_seq.clear();
+                self.search_matches.clear();
             }
             _ => {}
         }
@@ -559,6 +584,111 @@ impl App {
                 self.message = Some(format!("Unknown command: {}", other));
             }
         }
+    }
+
+    // ── Search mode ───────────────────────────────────────────────────────────
+
+    fn handle_search(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                let (r, c) = self.search_origin;
+                self.pane_mut().cursor_row = r;
+                self.pane_mut().cursor_col = c;
+                self.search_matches.clear();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                if self.search_matches.is_empty() && !self.search_buf.is_empty() {
+                    self.message = Some(format!("Pattern not found: {}", self.search_buf));
+                }
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.search_buf.pop();
+                self.recompute_search(true);
+            }
+            KeyCode::Char(c) => {
+                self.search_buf.push(c);
+                self.recompute_search(false);
+            }
+            _ => {}
+        }
+    }
+
+    /// Recompute `search_matches` from the current `search_buf` and jump to
+    /// the nearest match at or after `search_origin`.  When `from_origin` is
+    /// true the match index resets from the origin even if the query shrank.
+    fn recompute_search(&mut self, from_origin: bool) {
+        let query = self.search_buf.clone();
+        if query.is_empty() {
+            self.search_matches.clear();
+            let (r, c) = self.search_origin;
+            self.pane_mut().cursor_row = r;
+            self.pane_mut().cursor_col = c;
+            return;
+        }
+        let qlen = query.len();
+        self.search_matches = self
+            .pane()
+            .lines
+            .iter()
+            .enumerate()
+            .flat_map(|(row, line)| {
+                let mut hits = Vec::new();
+                let mut start = 0;
+                while let Some(pos) = line[start..].find(query.as_str()) {
+                    hits.push((row, start + pos));
+                    start += pos + qlen.max(1);
+                }
+                hits
+            })
+            .collect();
+
+        let (or, oc) = self.search_origin;
+        if self.search_matches.is_empty() {
+            return;
+        }
+        if from_origin || self.search_match_idx >= self.search_matches.len() {
+            self.search_match_idx = self
+                .search_matches
+                .iter()
+                .position(|&(r, c)| r > or || (r == or && c >= oc))
+                .unwrap_or(0);
+        }
+        self.jump_to_current_match();
+    }
+
+    fn jump_to_current_match(&mut self) {
+        if let Some(&(row, col)) = self.search_matches.get(self.search_match_idx) {
+            let pane = self.pane_mut();
+            pane.cursor_row = row;
+            pane.cursor_col = col;
+        }
+    }
+
+    fn next_search_match(&mut self) {
+        if self.search_matches.is_empty() {
+            if !self.search_buf.is_empty() {
+                self.message = Some(format!("Pattern not found: {}", self.search_buf));
+            }
+            return;
+        }
+        self.search_match_idx = (self.search_match_idx + 1) % self.search_matches.len();
+        self.jump_to_current_match();
+    }
+
+    fn prev_search_match(&mut self) {
+        if self.search_matches.is_empty() {
+            if !self.search_buf.is_empty() {
+                self.message = Some(format!("Pattern not found: {}", self.search_buf));
+            }
+            return;
+        }
+        self.search_match_idx = self
+            .search_match_idx
+            .checked_sub(1)
+            .unwrap_or(self.search_matches.len() - 1);
+        self.jump_to_current_match();
     }
 
     // ── Visual mode ───────────────────────────────────────────────────────────

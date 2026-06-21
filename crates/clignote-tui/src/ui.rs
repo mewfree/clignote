@@ -10,6 +10,21 @@ use crate::app::{App, Mode, SplitLayout};
 use crate::git::LineStatus;
 use crate::pane::Pane;
 
+struct SearchView<'a> {
+    matches: &'a [(usize, usize)],
+    query_len: usize,
+    current_idx: Option<usize>,
+}
+
+struct LineCtx<'a> {
+    cursor_row: usize,
+    cursor_col: usize,
+    visual_sel: Option<(usize, usize, usize, usize, bool)>,
+    mode: &'a Mode,
+    is_active: bool,
+    search_spans: &'a [(usize, usize, bool)],
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -51,6 +66,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     app.pane_rects = pane_rects.clone();
 
+    // Snapshot search state so we can borrow panes mutably inside the loop.
+    let search_query_len = app.search_buf.len();
+    let search_matches: Vec<(usize, usize)> = app.search_matches.clone();
+    let search_match_idx = app.search_match_idx;
+
     // Render each pane
     for (i, &rect) in pane_rects.iter().enumerate() {
         let is_active = i == app.active_pane;
@@ -60,7 +80,28 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             None
         };
         let mode = if is_active { &app.mode } else { &Mode::Normal };
-        render_pane(frame, &mut app.panes[i], rect, is_active, visual_sel, mode);
+        let search = if is_active {
+            SearchView {
+                matches: &search_matches,
+                query_len: search_query_len,
+                current_idx: Some(search_match_idx),
+            }
+        } else {
+            SearchView {
+                matches: &[],
+                query_len: 0,
+                current_idx: None,
+            }
+        };
+        render_pane(
+            frame,
+            &mut app.panes[i],
+            rect,
+            is_active,
+            visual_sel,
+            mode,
+            &search,
+        );
     }
 
     // Draw a vertical divider between vertical-split (side by side) panes
@@ -88,6 +129,7 @@ fn render_pane(
     is_active: bool,
     visual_sel: Option<(usize, usize, usize, usize, bool)>,
     mode: &Mode,
+    search: &SearchView<'_>,
 ) {
     let height = area.height as usize;
     pane.scroll_to_cursor(height);
@@ -122,15 +164,29 @@ fn render_pane(
     let visible: Vec<Line> = (pane.viewport_top..pane.viewport_top + height)
         .map(|row| match pane.lines.get(row) {
             None => Line::default(),
-            Some(line) => build_line(
-                line,
-                row,
-                pane.cursor_row,
-                pane.cursor_col,
-                visual_sel,
-                mode,
-                is_active,
-            ),
+            Some(line) => {
+                let row_search: Vec<(usize, usize, bool)> = search
+                    .matches
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(mi, &(r, c))| {
+                        if r == row && search.query_len > 0 {
+                            Some((c, search.query_len, search.current_idx == Some(mi)))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let ctx = LineCtx {
+                    cursor_row: pane.cursor_row,
+                    cursor_col: pane.cursor_col,
+                    visual_sel,
+                    mode,
+                    is_active,
+                    search_spans: &row_search,
+                };
+                build_line(line, row, &ctx)
+            }
         })
         .collect();
 
@@ -146,15 +202,7 @@ fn render_pane(
 
 // ── Line rendering ────────────────────────────────────────────────────────────
 
-fn build_line(
-    line: &str,
-    row: usize,
-    cursor_row: usize,
-    cursor_col: usize,
-    visual_sel: Option<(usize, usize, usize, usize, bool)>,
-    mode: &Mode,
-    is_active: bool,
-) -> Line<'static> {
+fn build_line(line: &str, row: usize, ctx: &LineCtx<'_>) -> Line<'static> {
     let chars: Vec<char> = line.chars().collect();
     let n = chars.len();
     let effective_n = n.max(1); // show at least a cursor cell on empty lines
@@ -173,16 +221,32 @@ fn build_line(
         let mut style = base_style;
 
         // Visual selection overlay
-        if is_active {
-            if let Some((sr, sc, er, ec, line_wise)) = visual_sel {
+        if ctx.is_active {
+            if let Some((sr, sc, er, ec, line_wise)) = ctx.visual_sel {
                 if in_selection(row, i, sr, sc, er, ec, line_wise) {
                     style = style.bg(Color::Rgb(80, 80, 130)).fg(Color::White);
                 }
             }
         }
 
+        // Search highlight overlay
+        for &(col_start, len, is_current) in ctx.search_spans {
+            if i >= col_start && i < col_start + len {
+                if is_current {
+                    style = Style::default().bg(Color::Yellow).fg(Color::Black);
+                } else {
+                    style = Style::default().bg(Color::Rgb(80, 60, 0)).fg(Color::White);
+                }
+                break;
+            }
+        }
+
         // Block cursor overlay (Normal / Command / Visual modes)
-        if is_active && row == cursor_row && i == cursor_col && !matches!(mode, Mode::Insert) {
+        if ctx.is_active
+            && row == ctx.cursor_row
+            && i == ctx.cursor_col
+            && !matches!(ctx.mode, Mode::Insert)
+        {
             style = Style::default().bg(Color::White).fg(Color::Black);
         }
 
@@ -583,6 +647,10 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             .bg(Color::Yellow)
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
+        Mode::Search => Style::default()
+            .bg(Color::Cyan)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
         Mode::Visual { .. } => Style::default()
             .bg(Color::Magenta)
             .fg(Color::White)
@@ -623,6 +691,16 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
 fn render_cmdline(frame: &mut Frame, app: &App, area: Rect) {
     let text = match app.mode {
         Mode::Command => format!(":{}", app.command_buf),
+        Mode::Search => {
+            let n = app.search_matches.len();
+            if app.search_buf.is_empty() {
+                "/".to_string()
+            } else if n == 0 {
+                format!("/{} (no matches)", app.search_buf)
+            } else {
+                format!("/{} ({}/{})", app.search_buf, app.search_match_idx + 1, n)
+            }
+        }
         _ => app
             .message
             .as_deref()
