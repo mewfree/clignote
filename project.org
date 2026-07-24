@@ -34,7 +34,7 @@
 ** DONE implement normal mode with basic movement (h j k l, w b e, 0 $, gg G)
 ** DONE implement insert mode (i, a, o, O, <Esc>)
 ** DONE implement visual mode (v, V, line selection)
-** TODO implement operator + motion pattern (d, y, c combined with motions)
+** TODO implement operator + motion pattern (d/y/c + motions: d$, yiw, c3j, etc.)
 ** DONE implement delete line (dd), yank line (yy), paste (p, P)
 ** TODO implement undo / redo (u, C-r)
 ** DONE implement command mode (:w, :q, :wq, :e <file>)
@@ -50,7 +50,6 @@
 ** DONE render links: [[url]] and [[url][desc]] styled (dim brackets, cyan desc)
 ** DONE open link under cursor with <Enter> (macOS open / xdg-open)
 ** TODO which-key floating popup (overlay showing keys after a prefix)
-** TODO operator + motion (d<motion>, y<motion>, c<motion>)
 ** TODO more split layouts (3+ panes)
 ** TODO buffer list / switcher (SPC b b)
 
@@ -62,13 +61,25 @@
 
 ** future: org-mode advanced features
 
-** TODO TODO keyword cycling (S-<right> / S-<left>)
-** TODO tag editing and auto-completion
-** TODO org-mode agenda view
-** TODO org-mode capture
+*** editing & structure (TUI-first)
+
 ** TODO folding / cycling visibility of headings (Tab, S-Tab)
-** TODO inline image preview (sixel or kitty protocol)
+** TODO TODO keyword cycling (S-<right> / S-<left>)
+** TODO priority set / cycle ([#A] [#B] [#C])
+** TODO tag editing and auto-completion
+** TODO checkboxes and plain-list toggle ([ ] ↔ [X]; list item cycling)
+** TODO timestamps: insert date, SCHEDULED, DEADLINE prompts
+** TODO tables: parse/render, Tab between cells, realign columns
+** TODO tables: insert/delete row and column; move row/col
+** TODO tables: simple formulas and TBLFM subset (field/column formulas, ranges, vsum-style basics)
+** TODO tables: recalculate on C-c C-c; realign after calc
+
+*** later / low priority (after core editing fidelity)
+
+** TODO org-mode agenda view
 ** TODO org-babel: execute source blocks
+** TODO tables: richer spreadsheet (more Calc-like functions, relative refs, hline-aware ranges)
+  - stretch goal / "insane" mode — not Excel parity; org-table fidelity first
 
 ** future: desktop app (macOS)
 
