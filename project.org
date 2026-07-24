@@ -81,6 +81,106 @@
 ** TODO tables: richer spreadsheet (more Calc-like functions, relative refs, hline-aware ranges)
   - stretch goal / "insane" mode — not Excel parity; org-table fidelity first
 
+** future: daily journaling (org-journal inspired)
+  inspiration: https://github.com/bastibe/org-journal
+  goal: terminal-first personal diary using org files; open/create today,
+  navigate days, search history, carry over open TODOs
+
+*** journal config & file layout
+
+** TODO journal config: dir, file format, date/time formats, file type
+  - journal_dir (default e.g. ~/org/journal/)
+  - file_type: daily | weekly | monthly | yearly (start with daily)
+  - file_format (strftime-style, e.g. %Y%m%d.org; may include subdirs)
+  - date_format / date_prefix for the top-level day headline
+  - time_format / time_prefix for timed entry headlines
+  - file_header template (string or simple format) for new files
+  - extend_today_until hour (entries before N:00 count as previous day)
+  - wire into cln config (env / config file / flags as appropriate)
+
+** TODO resolve journal path for a given date (create dir if missing)
+  - pure path logic in a journal module (prefer headless; TUI only opens)
+  - support daily first; design so weekly/monthly/yearly can share path rules
+  - for non-daily: CREATED property on day headlines (org-journal convention)
+
+*** create & open entries
+
+** TODO new journal entry for today (or specified date)
+  - open or create the file for the target date
+  - ensure day headline exists (date_format + date_prefix)
+  - insert timed entry headline (time_format) when journaling "now" on that day
+  - place cursor ready to type (insert mode optional)
+  - skip timed entry when opening existing day "for reading only"
+
+** TODO leader / command bindings for journal
+  - SPC j j — new entry today (org-journal-new-entry analogue)
+  - SPC j d — open today's file without creating a new timed entry
+  - SPC j n / SPC j p — next / previous journal file (by date)
+  - :Journal [date] command for dated open/create (org-read-date style later)
+  - document bindings in which-key / readme when user guide lands
+
+** TODO journal file header + entry templates on create
+  - insert configurable file_header on brand-new files
+  - optional after-entry / after-header hooks later; start with static templates
+
+*** navigation & browsing
+
+** TODO next / previous journal day (skip missing days or empty gaps)
+  - scan journal_dir by file name / date key, not only sequential calendar days
+  - works from any open journal buffer
+
+** TODO TUI calendar view with journal day markers
+  - month grid; mark days that have journal files
+  - open selected day (create if missing via confirm or "new entry")
+  - jump to prev/next day that has an entry ([ / ] style)
+  - SPC j c to open calendar
+
+*** search
+
+** TODO journal text search across files in a date range
+  - prompt for query + interval (all / year / month / week / custom)
+  - results list with date + matching context; open entry on select
+  - order results by date ascending or descending (config)
+  - prefer built-in plain search over agenda (org-journal advice for large dirs)
+
+*** carry over & scheduling
+
+** TODO carry over open TODO items into a new day
+  - when creating today's file, match carryover_items (default TODO keyword)
+  - insert matched headlines into the new day (subtree copy)
+  - handle_old_carryover: remove from previous day by default; optional leave/tag
+  - skip named drawers on carry over (e.g. LOGBOOK) via config list
+
+** TODO scheduled / future journal entries
+  - new entry on a future date (prompt for date; optional TODO keyword)
+  - schedule-view: read-only overview of future-dated journal TODOs
+  - timestamps on future entries so they surface once the day arrives
+
+*** weekly / monthly / yearly (after daily is solid)
+
+** TODO multi-period journal files (weekly / monthly / yearly)
+  - one file per period; day headlines inside with :PROPERTIES: :CREATED:
+  - start_on_weekday for weekly files
+  - path resolution + new-entry insert under the correct day headline
+
+*** later / polish
+
+** TODO journal encryption options (optional / advanced)
+  - age/gpg-style whole-file encryption path if we support encrypted buffers
+  - per-entry crypt is lower priority; depends on broader encrypt story
+
+** TODO journal date index / cache for large directories
+  - speed calendar markers and range scans when many files exist
+  - invalidate on create/delete/rename under journal_dir
+
+** TODO capture-style quick journal (save & close workflow)
+  - optional "write entry then quit" flow (capture-like)
+  - useful once command mode / floating prompts are comfortable
+
+** TODO document journaling in user guide + support matrix
+  - setup (journal_dir, formats), keybindings, carryover, search
+  - note compatibility goals vs org-journal file layout
+
 ** future: desktop app (macOS)
 
 ** TODO evaluate framework: Swift/AppKit vs Tauri vs custom ratatui in a window
