@@ -258,10 +258,17 @@ impl App {
             {
                 self.active_pane = i;
                 let pane = &mut self.panes[i];
+                // Content starts after the 1-col git gutter (when there is room).
+                const GUTTER: usize = 1;
+                let content_x = if rect.width as usize > GUTTER {
+                    rect.x as usize + GUTTER
+                } else {
+                    rect.x as usize
+                };
                 let buf_row = (pane.viewport_top + row - rect.y as usize)
                     .min(pane.lines.len().saturating_sub(1));
-                let buf_col =
-                    (col - rect.x as usize).min(pane.lines[buf_row].len().saturating_sub(1));
+                let buf_col = (pane.viewport_left + col.saturating_sub(content_x))
+                    .min(pane.lines[buf_row].len().saturating_sub(1));
                 pane.cursor_row = buf_row;
                 pane.cursor_col = buf_col;
                 // Leave visual mode on click

@@ -132,8 +132,6 @@ fn render_pane(
     search: &SearchView<'_>,
 ) {
     let height = area.height as usize;
-    pane.scroll_to_cursor(height);
-    pane.recompute_git_diff();
 
     // Split off a 1-column gutter on the left for git status marks.
     const GUTTER: u16 = 1;
@@ -145,6 +143,10 @@ fn render_pane(
     } else {
         (Rect::new(area.x, area.y, 0, 0), area)
     };
+
+    let width = content_area.width as usize;
+    pane.scroll_to_cursor(height, width);
+    pane.recompute_git_diff();
 
     // Render git gutter
     let gutter_lines: Vec<Line> = (pane.viewport_top..pane.viewport_top + height)
@@ -160,7 +162,7 @@ fn render_pane(
         .collect();
     frame.render_widget(Paragraph::new(gutter_lines), gutter_area);
 
-    // Render content
+    // Render content (full lines; horizontal scroll applied via Paragraph)
     let visible: Vec<Line> = (pane.viewport_top..pane.viewport_top + height)
         .map(|row| match pane.lines.get(row) {
             None => Line::default(),
@@ -190,12 +192,15 @@ fn render_pane(
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(visible), content_area);
+    frame.render_widget(
+        Paragraph::new(visible).scroll((0, pane.viewport_left as u16)),
+        content_area,
+    );
 
     // Terminal cursor position (for blinking cursor in Insert)
     if is_active {
         let screen_row = content_area.y + (pane.cursor_row - pane.viewport_top) as u16;
-        let screen_col = content_area.x + pane.cursor_col as u16;
+        let screen_col = content_area.x + (pane.cursor_col - pane.viewport_left) as u16;
         frame.set_cursor_position((screen_col, screen_row));
     }
 }

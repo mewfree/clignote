@@ -7,7 +7,10 @@ pub struct Pane {
     pub lines: Vec<String>,
     pub cursor_row: usize,
     pub cursor_col: usize,
+    /// First visible buffer row (vertical scroll).
     pub viewport_top: usize,
+    /// First visible buffer column (horizontal scroll).
+    pub viewport_left: usize,
     pub file_path: Option<PathBuf>,
     pub modified: bool,
     /// Per-line diff status vs the committed HEAD version.
@@ -34,6 +37,7 @@ impl Pane {
             cursor_row: 0,
             cursor_col: 0,
             viewport_top: 0,
+            viewport_left: 0,
             file_path: Some(file_path),
             modified: false,
             git_diff,
@@ -48,6 +52,7 @@ impl Pane {
             cursor_row: 0,
             cursor_col: 0,
             viewport_top: 0,
+            viewport_left: 0,
             file_path: None,
             modified: false,
             git_diff: Vec::new(),
@@ -84,14 +89,21 @@ impl Pane {
         self.cursor_col = self.cursor_col.min(max);
     }
 
-    pub fn scroll_to_cursor(&mut self, height: usize) {
-        if height == 0 {
-            return;
+    /// Keep the cursor inside the visible viewport (vertical and horizontal).
+    pub fn scroll_to_cursor(&mut self, height: usize, width: usize) {
+        if height > 0 {
+            if self.cursor_row < self.viewport_top {
+                self.viewport_top = self.cursor_row;
+            } else if self.cursor_row >= self.viewport_top + height {
+                self.viewport_top = self.cursor_row - height + 1;
+            }
         }
-        if self.cursor_row < self.viewport_top {
-            self.viewport_top = self.cursor_row;
-        } else if self.cursor_row >= self.viewport_top + height {
-            self.viewport_top = self.cursor_row - height + 1;
+        if width > 0 {
+            if self.cursor_col < self.viewport_left {
+                self.viewport_left = self.cursor_col;
+            } else if self.cursor_col >= self.viewport_left + width {
+                self.viewport_left = self.cursor_col - width + 1;
+            }
         }
     }
 
@@ -507,5 +519,65 @@ impl Pane {
                     .map_err(|e| format!("Error writing: {}", e))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pane_with_line(s: &str) -> Pane {
+        let mut p = Pane::empty();
+        p.lines = vec![s.to_string()];
+        p
+    }
+
+    #[test]
+    fn horizontal_scroll_follows_cursor_to_end_of_line() {
+        let mut p = pane_with_line(&"x".repeat(100));
+        p.cursor_col = 99; // end of line
+        p.scroll_to_cursor(10, 20);
+        // Cursor must be visible: viewport_left ..= viewport_left+width-1
+        assert!(p.cursor_col >= p.viewport_left);
+        assert!(p.cursor_col < p.viewport_left + 20);
+        assert_eq!(p.viewport_left, 80); // 99 - 20 + 1
+    }
+
+    #[test]
+    fn horizontal_scroll_resets_when_moving_to_start() {
+        let mut p = pane_with_line(&"x".repeat(100));
+        p.cursor_col = 99;
+        p.scroll_to_cursor(10, 20);
+        assert_eq!(p.viewport_left, 80);
+
+        p.move_line_start();
+        p.scroll_to_cursor(10, 20);
+        assert_eq!(p.viewport_left, 0);
+        assert_eq!(p.cursor_col, 0);
+    }
+
+    #[test]
+    fn horizontal_scroll_moves_left_with_cursor() {
+        let mut p = pane_with_line(&"x".repeat(100));
+        p.cursor_col = 50;
+        p.viewport_left = 40;
+        p.scroll_to_cursor(10, 20);
+        // 50 is within [40, 60) — no change
+        assert_eq!(p.viewport_left, 40);
+
+        p.cursor_col = 30;
+        p.scroll_to_cursor(10, 20);
+        assert_eq!(p.viewport_left, 30);
+    }
+
+    #[test]
+    fn move_line_end_then_scroll_keeps_cursor_visible() {
+        let mut p = pane_with_line(&"hello world this is a long line of text");
+        let width = 10;
+        p.move_line_end();
+        p.scroll_to_cursor(5, width);
+        assert_eq!(p.cursor_col, p.current_line_len() - 1);
+        assert!(p.cursor_col >= p.viewport_left);
+        assert!(p.cursor_col < p.viewport_left + width);
     }
 }

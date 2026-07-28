@@ -43,6 +43,7 @@
 ** TODO implement file picker / fuzzy open (SPC f f)
 ** DONE handle unsaved changes prompt on quit
 ** DONE mouse click to move cursor
+** DONE horizontal scroll when cursor moves past visible width ($, long lines)
 ** DONE window splitting (C-w s/v/w/q/hjkl, :sp, :vsplit, SPC w …)
 ** DONE space / doom-emacs leader keybindings (SPC f s, SPC w …, SPC q q)
 ** DONE which-key hint in cmdline after prefix keys
