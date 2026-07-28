@@ -32,7 +32,7 @@
 ** DONE implement cursor model with line + column tracking
 ** DONE render text with org-mode syntax highlighting (headings, bold, etc.)
 ** DONE implement normal mode with basic movement (h j k l, w b e, 0 $, gg G)
-** DONE implement insert mode (i, a, o, O, <Esc>)
+** DONE implement insert mode (i, a, A, o, O, <Esc>)
 ** DONE implement visual mode (v, V, line selection)
 ** TODO implement operator + motion pattern (d/y/c + motions: d$, yiw, c3j, etc.)
 ** DONE implement delete line (dd), yank line (yy), paste (p, P)

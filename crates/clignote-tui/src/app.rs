@@ -361,6 +361,11 @@ impl App {
                 self.pane_mut().cursor_col = col.min(max);
                 self.mode = Mode::Insert;
             }
+            KeyCode::Char('A') => {
+                let max = self.pane().current_line_len();
+                self.pane_mut().cursor_col = max;
+                self.mode = Mode::Insert;
+            }
             KeyCode::Char('o') => {
                 self.pane_mut().open_line_below();
                 self.mode = Mode::Insert;
