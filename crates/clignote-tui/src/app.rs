@@ -164,6 +164,12 @@ pub struct App {
     pub search_match_idx: usize,
     /// Cursor position at the moment `/` was pressed; restored on Esc.
     search_origin: (usize, usize),
+
+    /// When true (default), `[[url][label]]` links display just the label.
+    /// The raw target is revealed only while the cursor's line is being
+    /// edited in Insert mode; Normal-mode navigation never pops links open.
+    /// Toggle with `SPC t l`.
+    pub conceal_links: bool,
 }
 
 fn is_web_url(url: &str) -> bool {
@@ -205,6 +211,7 @@ impl App {
             search_matches: Vec::new(),
             search_match_idx: 0,
             search_origin: (0, 0),
+            conceal_links: true,
         })
     }
 
@@ -451,6 +458,14 @@ impl App {
             Action::NextPane => self.cycle_pane(),
             Action::FocusPane(dir) => self.focus_pane(dir),
             Action::SaveFile => self.save_active(),
+            Action::ToggleLinkConceal => {
+                self.conceal_links = !self.conceal_links;
+                self.message = Some(if self.conceal_links {
+                    "Links: showing label".into()
+                } else {
+                    "Links: showing target".into()
+                });
+            }
             Action::QuitAll => {
                 if self.panes.iter().any(|p| p.modified) {
                     self.message = Some("Unsaved changes — use :q! or :wq".into());

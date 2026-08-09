@@ -25,6 +25,7 @@ pub enum Action {
     FocusPane(PaneDir),
     SaveFile,
     QuitAll,
+    ToggleLinkConceal,
 }
 
 // ── Sequence matching ─────────────────────────────────────────────────────────
@@ -67,12 +68,13 @@ fn exact_match(s: &str) -> Option<Action> {
         "SPC w k" => Some(Action::FocusPane(PaneDir::Up)),
         "SPC w l" => Some(Action::FocusPane(PaneDir::Right)),
         "SPC q q" => Some(Action::QuitAll),
+        "SPC t l" => Some(Action::ToggleLinkConceal),
         _ => None,
     }
 }
 
 const KNOWN_PREFIXES: &[&str] = &[
-    "g", "d", "y", "C-w", "SPC", "SPC f", "SPC w", "SPC b", "SPC q",
+    "g", "d", "y", "C-w", "SPC", "SPC f", "SPC w", "SPC b", "SPC q", "SPC t",
 ];
 
 pub fn match_seq(seq_str: &str) -> MatchResult {
@@ -93,11 +95,12 @@ pub fn hint_for_prefix(prefix: &str) -> &'static str {
         "d" => "d: delete line  w: delete word",
         "y" => "y: yank line",
         "C-w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
-        "SPC" => "f: file  w: window  b: buffer  q: quit",
+        "SPC" => "f: file  w: window  b: buffer  q: quit  t: toggle",
         "SPC f" => "s: save",
         "SPC w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
         "SPC b" => "(buffer commands — coming soon)",
         "SPC q" => "q: quit",
+        "SPC t" => "l: toggle link display (label/target)",
         _ => "",
     }
 }

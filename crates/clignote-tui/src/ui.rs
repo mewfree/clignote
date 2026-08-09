@@ -10,6 +10,13 @@ use crate::app::{App, Mode, SplitLayout};
 use crate::git::LineStatus;
 use crate::pane::Pane;
 
+struct PaneRenderCtx<'a> {
+    is_active: bool,
+    visual_sel: Option<(usize, usize, usize, usize, bool)>,
+    mode: &'a Mode,
+    conceal_links: bool,
+}
+
 struct SearchView<'a> {
     matches: &'a [(usize, usize)],
     query_len: usize,
@@ -23,6 +30,7 @@ struct LineCtx<'a> {
     mode: &'a Mode,
     is_active: bool,
     search_spans: &'a [(usize, usize, bool)],
+    conceal_links: bool,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -93,15 +101,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 current_idx: None,
             }
         };
-        render_pane(
-            frame,
-            &mut app.panes[i],
-            rect,
+        let pane_ctx = PaneRenderCtx {
             is_active,
             visual_sel,
             mode,
-            &search,
-        );
+            conceal_links: app.conceal_links,
+        };
+        render_pane(frame, &mut app.panes[i], rect, &pane_ctx, &search);
     }
 
     // Draw a vertical divider between vertical-split (side by side) panes
@@ -126,11 +132,10 @@ fn render_pane(
     frame: &mut Frame,
     pane: &mut Pane,
     area: Rect,
-    is_active: bool,
-    visual_sel: Option<(usize, usize, usize, usize, bool)>,
-    mode: &Mode,
+    pane_ctx: &PaneRenderCtx<'_>,
     search: &SearchView<'_>,
 ) {
+    let is_active = pane_ctx.is_active;
     let height = area.height as usize;
 
     // Split off a 1-column gutter on the left for git status marks.
@@ -182,10 +187,16 @@ fn render_pane(
                 let ctx = LineCtx {
                     cursor_row: pane.cursor_row,
                     cursor_col: pane.cursor_col,
-                    visual_sel,
-                    mode,
+                    visual_sel: pane_ctx.visual_sel,
+                    mode: pane_ctx.mode,
                     is_active,
                     search_spans: &row_search,
+                    // Reveal raw link syntax only while actively editing that line in
+                    // Insert mode; Normal-mode navigation never pops links open.
+                    conceal_links: pane_ctx.conceal_links
+                        && !(is_active
+                            && row == pane.cursor_row
+                            && matches!(pane_ctx.mode, Mode::Insert)),
                 };
                 build_line(line, row, &ctx)
             }
@@ -208,12 +219,13 @@ fn render_pane(
 // ── Line rendering ────────────────────────────────────────────────────────────
 
 fn build_line(line: &str, row: usize, ctx: &LineCtx<'_>) -> Line<'static> {
-    let chars: Vec<char> = line.chars().collect();
+    let (chars, base) = if ctx.conceal_links {
+        conceal_links(line)
+    } else {
+        (line.chars().collect(), org_styles(line))
+    };
     let n = chars.len();
     let effective_n = n.max(1); // show at least a cursor cell on empty lines
-
-    // Per-character base styles from org-mode analysis
-    let base = org_styles(line);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
@@ -440,6 +452,82 @@ fn apply_link_styles(chars: &[char], styles: &mut [Style]) {
             i += 1;
         }
     }
+}
+
+/// Build the display chars/styles for a line with link syntax concealed:
+/// `[[url][desc]]` collapses to just `desc`, and `[[url]]` collapses to just
+/// `url`. All other styling (headings, strikethrough, etc.) is unaffected.
+fn conceal_links(line: &str) -> (Vec<char>, Vec<Style>) {
+    let chars: Vec<char> = line.chars().collect();
+    let styles = org_styles(line);
+    let n = chars.len();
+
+    // Ranges of source-char indices to drop from the display (brackets, "][", URL).
+    let mut drop: Vec<(usize, usize)> = Vec::new();
+
+    let mut i = 0;
+    while i + 1 < n {
+        if chars[i] != '[' || chars[i + 1] != '[' {
+            i += 1;
+            continue;
+        }
+        let link_start = i;
+        i += 2;
+        let url_start = i;
+        while i < n && chars[i] != ']' {
+            i += 1;
+        }
+        if i >= n {
+            break;
+        }
+        let url_end = i;
+        i += 1;
+        if i >= n {
+            break;
+        }
+
+        if chars[i] == ']' {
+            // [[url]] — drop "[[" and "]]", keep url text.
+            drop.push((link_start, url_start));
+            drop.push((url_end, i + 1));
+            i += 1;
+        } else if chars[i] == '[' {
+            // [[url][desc]] — drop everything but desc text.
+            i += 1;
+            let desc_start = i;
+            while i < n && chars[i] != ']' {
+                i += 1;
+            }
+            if i >= n {
+                break;
+            }
+            let desc_end = i;
+            i += 1;
+            if i >= n || chars[i] != ']' {
+                continue;
+            }
+            drop.push((link_start, desc_start));
+            drop.push((desc_end, i + 1));
+            i += 1;
+        }
+    }
+
+    if drop.is_empty() {
+        return (chars, styles);
+    }
+
+    let mut out_chars = Vec::with_capacity(n);
+    let mut out_styles = Vec::with_capacity(n);
+    'outer: for idx in 0..n {
+        for &(start, end) in &drop {
+            if idx >= start && idx < end {
+                continue 'outer;
+            }
+        }
+        out_chars.push(chars[idx]);
+        out_styles.push(styles[idx]);
+    }
+    (out_chars, out_styles)
 }
 
 /// Apply `CROSSED_OUT` styling to `+text+` spans in a line.
@@ -714,4 +802,30 @@ fn render_cmdline(frame: &mut Frame, app: &App, area: Rect) {
     };
     let widget = Paragraph::new(text).style(Style::default().fg(Color::White));
     frame.render_widget(widget, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conceal_links_shows_description_only() {
+        let (chars, _) = conceal_links("see [[https://example.com][the docs]] here");
+        let s: String = chars.into_iter().collect();
+        assert_eq!(s, "see the docs here");
+    }
+
+    #[test]
+    fn conceal_links_shows_bare_url_when_no_description() {
+        let (chars, _) = conceal_links("see [[https://example.com]] here");
+        let s: String = chars.into_iter().collect();
+        assert_eq!(s, "see https://example.com here");
+    }
+
+    #[test]
+    fn conceal_links_leaves_plain_text_untouched() {
+        let (chars, _) = conceal_links("no links here");
+        let s: String = chars.into_iter().collect();
+        assert_eq!(s, "no links here");
+    }
 }
