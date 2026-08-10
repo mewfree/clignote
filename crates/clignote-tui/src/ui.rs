@@ -52,20 +52,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let status_area = main_and_bars[1];
     let cmdline_area = main_and_bars[2];
 
-    if app.mode == Mode::Browse {
-        render_browse(frame, app, editor_area);
-        render_status(frame, app, status_area);
-        render_cmdline(frame, app, cmdline_area);
-        return;
-    }
-
-    if app.mode == Mode::BufferList {
-        render_buffer_list(frame, app, editor_area);
-        render_status(frame, app, status_area);
-        render_cmdline(frame, app, cmdline_area);
-        return;
-    }
-
     // Compute pane rects for this render pass and store them in App
     let pane_rects: Vec<Rect> = match app.layout {
         SplitLayout::Single => vec![editor_area],
@@ -93,9 +79,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let search_matches: Vec<(usize, usize)> = app.search_matches.clone();
     let search_match_idx = app.search_match_idx;
 
+    // In Browse/BufferList mode, the active pane's content is replaced by the
+    // overlay; other panes keep showing their buffers.
+    let active_overlay_rect = match app.mode {
+        Mode::Browse | Mode::BufferList => Some(pane_rects[app.active_pane]),
+        _ => None,
+    };
+
     // Render each pane
     for (i, &rect) in pane_rects.iter().enumerate() {
         let is_active = i == app.active_pane;
+        if is_active && active_overlay_rect.is_some() {
+            continue;
+        }
         let visual_sel = if is_active {
             app.visual_selection()
         } else {
@@ -122,6 +118,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             conceal_links: app.conceal_links,
         };
         render_pane(frame, &mut app.panes[i], rect, &pane_ctx, &search);
+    }
+
+    if let Some(rect) = active_overlay_rect {
+        match app.mode {
+            Mode::Browse => render_browse(frame, app, rect),
+            Mode::BufferList => render_buffer_list(frame, app, rect),
+            _ => {}
+        }
     }
 
     // Draw a vertical divider between vertical-split (side by side) panes
