@@ -296,15 +296,19 @@ fn open_url(url: &str) {
 
 impl App {
     pub fn new(file_path: Option<&str>) -> anyhow::Result<Self> {
+        let browse_target = match file_path {
+            Some(p) if Path::new(p).is_dir() => Some(StdPathBuf::from(p)),
+            _ => None,
+        };
         let pane = match file_path {
-            Some(p) => Pane::from_file(p)?,
-            None => Pane::empty(),
+            Some(p) if browse_target.is_none() => Pane::from_file(p)?,
+            _ => Pane::empty(),
         };
         let buffers = match &pane.file_path {
             Some(p) => vec![p.clone()],
             None => Vec::new(),
         };
-        Ok(Self {
+        let mut app = Self {
             mode: Mode::Normal,
             panes: vec![pane],
             active_pane: 0,
@@ -329,7 +333,11 @@ impl App {
             buffers,
             buf_list_selected: 0,
             buf_list_scroll: 0,
-        })
+        };
+        if let Some(dir) = browse_target {
+            app.enter_browse(&dir);
+        }
+        Ok(app)
     }
 
     // ── Pane access ───────────────────────────────────────────────────────────
