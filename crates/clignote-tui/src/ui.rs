@@ -52,6 +52,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let status_area = main_and_bars[1];
     let cmdline_area = main_and_bars[2];
 
+    if app.mode == Mode::Browse {
+        render_browse(frame, app, editor_area);
+        render_status(frame, app, status_area);
+        render_cmdline(frame, app, cmdline_area);
+        return;
+    }
+
     // Compute pane rects for this render pass and store them in App
     let pane_rects: Vec<Rect> = match app.layout {
         SplitLayout::Single => vec![editor_area],
@@ -124,6 +131,61 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_status(frame, app, status_area);
     render_cmdline(frame, app, cmdline_area);
+}
+
+// ── Directory browser renderer ─────────────────────────────────────────────────
+
+fn render_browse(frame: &mut Frame, app: &mut App, area: Rect) {
+    const HEADER_ROWS: usize = 2; // path line + blank line
+
+    let list_height = (area.height as usize).saturating_sub(HEADER_ROWS);
+    if list_height > 0 {
+        if app.browse_selected < app.browse_scroll {
+            app.browse_scroll = app.browse_selected;
+        } else if app.browse_selected >= app.browse_scroll + list_height {
+            app.browse_scroll = app.browse_selected - list_height + 1;
+        }
+    }
+
+    let header = Line::from(Span::styled(
+        app.browse_dir.display().to_string(),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    let mut lines: Vec<Line> = vec![header, Line::default()];
+    if app.browse_entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " (no directories or .org files) ",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        let end = (app.browse_scroll + list_height).min(app.browse_entries.len());
+        for (i, entry) in app.browse_entries[app.browse_scroll..end]
+            .iter()
+            .enumerate()
+        {
+            let idx = app.browse_scroll + i;
+            let selected = idx == app.browse_selected;
+            let label = if entry.is_dir {
+                format!("{}/", entry.name)
+            } else {
+                entry.name.clone()
+            };
+            let mut style = if entry.is_dir {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            if selected {
+                style = style.bg(Color::White).fg(Color::Black);
+            }
+            lines.push(Line::from(Span::styled(format!(" {} ", label), style)));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 // ── Pane renderer ─────────────────────────────────────────────────────────────
@@ -747,6 +809,10 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Visual { .. } => Style::default()
             .bg(Color::Magenta)
             .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+        Mode::Browse => Style::default()
+            .bg(Color::Cyan)
+            .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
     };
 

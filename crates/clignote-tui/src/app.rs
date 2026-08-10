@@ -100,6 +100,8 @@ pub enum Mode {
     Visual {
         line_wise: bool,
     },
+    /// Minimal directory browser (`:e <dir>`, `:Ex`).
+    Browse,
 }
 
 impl Mode {
@@ -111,8 +113,17 @@ impl Mode {
             Mode::Search => "SEARCH",
             Mode::Visual { line_wise: true } => "V-LINE",
             Mode::Visual { line_wise: false } => "VISUAL",
+            Mode::Browse => "BROWSE",
         }
     }
+}
+
+// ── Directory browser ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct BrowseEntry {
+    pub name: String,
+    pub is_dir: bool,
 }
 
 // ── Split layout ──────────────────────────────────────────────────────────────
@@ -170,6 +181,13 @@ pub struct App {
     /// edited in Insert mode; Normal-mode navigation never pops links open.
     /// Toggle with `SPC t l`.
     pub conceal_links: bool,
+
+    // Directory browser state (Mode::Browse)
+    pub browse_dir: StdPathBuf,
+    pub browse_entries: Vec<BrowseEntry>,
+    pub browse_selected: usize,
+    /// First visible entry index (vertical scroll), kept in sync by the renderer.
+    pub browse_scroll: usize,
 }
 
 fn is_web_url(url: &str) -> bool {
@@ -212,6 +230,10 @@ impl App {
             search_match_idx: 0,
             search_origin: (0, 0),
             conceal_links: true,
+            browse_dir: StdPathBuf::new(),
+            browse_entries: Vec::new(),
+            browse_selected: 0,
+            browse_scroll: 0,
         })
     }
 
@@ -235,6 +257,7 @@ impl App {
             Mode::Command => self.handle_command(key),
             Mode::Search => self.handle_search(key),
             Mode::Visual { line_wise } => self.handle_visual(key, *line_wise),
+            Mode::Browse => self.handle_browse(key),
         }
     }
 
@@ -418,8 +441,13 @@ impl App {
                     if is_web_url(&url) {
                         open_url(&url);
                     } else {
-                        let path = url.strip_prefix("file:").unwrap_or(&url);
-                        self.open_file(path, false);
+                        let raw = url.strip_prefix("file:").unwrap_or(&url);
+                        let resolved = self.resolve_link_path(raw);
+                        if resolved.is_dir() {
+                            self.enter_browse(&resolved);
+                        } else if let Some(path) = resolved.to_str() {
+                            self.open_file(path, false);
+                        }
                     }
                 } else {
                     self.pane_mut().toggle_checkbox();
@@ -595,17 +623,38 @@ impl App {
             "vs" | "vsplit" => self.split(SplitLayout::Vertical),
             "e" | "edit" => {
                 if let Some(path) = parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                    self.open_file(path, false);
+                    if Path::new(path).is_dir() {
+                        self.enter_browse(Path::new(path));
+                    } else {
+                        self.open_file(path, false);
+                    }
                 } else {
                     self.message = Some("Usage: :e <filename>".into());
                 }
             }
             "e!" | "edit!" => {
                 if let Some(path) = parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                    self.open_file(path, true);
+                    if Path::new(path).is_dir() {
+                        self.enter_browse(Path::new(path));
+                    } else {
+                        self.open_file(path, true);
+                    }
                 } else {
                     self.message = Some("Usage: :e! <filename>".into());
                 }
+            }
+            "Ex" | "Explore" | "explore" => {
+                let dir = match parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    Some(path) => StdPathBuf::from(path),
+                    None => self
+                        .pane()
+                        .file_path
+                        .as_ref()
+                        .and_then(|p| p.parent())
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| StdPathBuf::from(".")),
+                };
+                self.enter_browse(&dir);
             }
             other => {
                 self.message = Some(format!("Unknown command: {}", other));
@@ -840,6 +889,20 @@ impl App {
 
     // ── File I/O ──────────────────────────────────────────────────────────────
 
+    /// Resolve a link target against the active pane's file directory, so
+    /// relative links (e.g. `[[notes/foo.org]]`) work regardless of the
+    /// process's current working directory.
+    fn resolve_link_path(&self, raw: &str) -> StdPathBuf {
+        let p = Path::new(raw);
+        if p.is_absolute() {
+            return p.to_path_buf();
+        }
+        match self.pane().file_path.as_ref().and_then(|f| f.parent()) {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.join(p),
+            _ => p.to_path_buf(),
+        }
+    }
+
     fn open_file(&mut self, path: &str, force: bool) {
         if !force && self.pane().modified {
             self.message = Some("Unsaved changes — :w first, or :e! to discard".into());
@@ -855,6 +918,99 @@ impl App {
             Err(e) => {
                 self.message = Some(format!("Cannot open \"{}\": {}", path, e));
             }
+        }
+    }
+
+    // ── Directory browser ─────────────────────────────────────────────────────
+
+    /// List `dir` and switch to `Mode::Browse`. Shows subdirectories and
+    /// `.org` files only, directories first, alphabetically within each group.
+    fn enter_browse(&mut self, dir: &Path) {
+        let mut entries: Vec<BrowseEntry> = match std::fs::read_dir(dir) {
+            Ok(read_dir) => read_dir
+                .flatten()
+                .filter_map(|entry| {
+                    let name = entry.file_name().into_string().ok()?;
+                    if name.starts_with('.') {
+                        return None;
+                    }
+                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    if !is_dir && !name.ends_with(".org") {
+                        return None;
+                    }
+                    Some(BrowseEntry { name, is_dir })
+                })
+                .collect(),
+            Err(e) => {
+                self.message = Some(format!("Cannot open \"{}\": {}", dir.display(), e));
+                return;
+            }
+        };
+        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+        if dir.parent().is_some() {
+            entries.insert(
+                0,
+                BrowseEntry {
+                    name: "..".to_string(),
+                    is_dir: true,
+                },
+            );
+        }
+        self.browse_dir = dir.to_path_buf();
+        self.browse_entries = entries;
+        self.browse_selected = 0;
+        self.browse_scroll = 0;
+        self.mode = Mode::Browse;
+        self.key_seq.clear();
+    }
+
+    fn handle_browse(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.browse_entries.is_empty() {
+                    self.browse_selected =
+                        (self.browse_selected + 1).min(self.browse_entries.len() - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.browse_selected = self.browse_selected.saturating_sub(1);
+            }
+            KeyCode::Char('d') if ctrl => {
+                if !self.browse_entries.is_empty() {
+                    self.browse_selected =
+                        (self.browse_selected + 20).min(self.browse_entries.len() - 1);
+                }
+            }
+            KeyCode::Char('u') if ctrl => {
+                self.browse_selected = self.browse_selected.saturating_sub(20);
+            }
+            KeyCode::Char('-') | KeyCode::Backspace => {
+                if let Some(parent) = self.browse_dir.clone().parent() {
+                    self.enter_browse(parent);
+                }
+            }
+            KeyCode::Enter => {
+                let Some(entry) = self.browse_entries.get(self.browse_selected).cloned() else {
+                    return;
+                };
+                if entry.name == ".." {
+                    if let Some(parent) = self.browse_dir.clone().parent() {
+                        self.enter_browse(parent);
+                    }
+                    return;
+                }
+                let target = self.browse_dir.join(&entry.name);
+                if entry.is_dir {
+                    self.enter_browse(&target);
+                } else if let Some(path) = target.to_str() {
+                    self.open_file(path, false);
+                }
+            }
+            _ => {}
         }
     }
 
