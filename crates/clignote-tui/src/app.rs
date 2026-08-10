@@ -129,15 +129,94 @@ pub struct BrowseEntry {
     pub is_dir: bool,
 }
 
-// ── Split layout ──────────────────────────────────────────────────────────────
+// ── Window layout tree ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SplitLayout {
-    Single,
-    /// pane[0] left │ pane[1] right
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitDir {
+    /// Horizontal dividing line — panes stacked top/bottom (vim's `:split`, `C-w s`).
     Horizontal,
-    /// pane[0] top / pane[1] bottom
+    /// Vertical dividing line — panes side by side (vim's `:vsplit`, `C-w v`).
     Vertical,
+}
+
+/// Recursive window tree. Leaves hold an index into `App::panes`; splits nest
+/// freely so hsplit and vsplit can combine (e.g. one tall pane on the left,
+/// two stacked panes on the right) and any number of panes is supported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneLayout {
+    Leaf(usize),
+    Split {
+        dir: SplitDir,
+        children: Vec<PaneLayout>,
+    },
+}
+
+impl PaneLayout {
+    /// Pane indices in left-to-right / top-to-bottom tree order.
+    pub fn leaves(&self) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.collect_leaves(&mut out);
+        out
+    }
+
+    fn collect_leaves(&self, out: &mut Vec<usize>) {
+        match self {
+            PaneLayout::Leaf(idx) => out.push(*idx),
+            PaneLayout::Split { children, .. } => {
+                for c in children {
+                    c.collect_leaves(out);
+                }
+            }
+        }
+    }
+
+    /// Replace the leaf holding `target` with a new split of `[target, new_idx]`.
+    fn split_leaf(&mut self, target: usize, new_idx: usize, dir: SplitDir) -> bool {
+        match self {
+            PaneLayout::Leaf(idx) if *idx == target => {
+                *self = PaneLayout::Split {
+                    dir,
+                    children: vec![PaneLayout::Leaf(target), PaneLayout::Leaf(new_idx)],
+                };
+                true
+            }
+            PaneLayout::Leaf(_) => false,
+            PaneLayout::Split { children, .. } => children
+                .iter_mut()
+                .any(|c| c.split_leaf(target, new_idx, dir)),
+        }
+    }
+
+    /// Remove the leaf holding `target`, collapsing any split left with a
+    /// single child so the tree stays minimal.
+    fn remove_leaf(&mut self, target: usize) {
+        if let PaneLayout::Split { children, .. } = self {
+            children.retain(|c| c != &PaneLayout::Leaf(target));
+            for child in children.iter_mut() {
+                child.remove_leaf(target);
+            }
+            if children.len() == 1 {
+                *self = children.remove(0);
+            }
+        }
+    }
+
+    /// Decrement every leaf index greater than `removed_idx` by one, to stay
+    /// in sync after `App::panes.remove(removed_idx)`.
+    fn renumber_after_removal(&mut self, removed_idx: usize) {
+        match self {
+            PaneLayout::Leaf(idx) => {
+                if *idx > removed_idx {
+                    *idx -= 1;
+                }
+            }
+            PaneLayout::Split { children, .. } => {
+                for c in children.iter_mut() {
+                    c.renumber_after_removal(removed_idx);
+                }
+            }
+        }
+    }
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -146,7 +225,7 @@ pub struct App {
     pub mode: Mode,
     pub panes: Vec<Pane>,
     pub active_pane: usize,
-    pub layout: SplitLayout,
+    pub layout: PaneLayout,
 
     /// Shared yank register.
     pub register: Vec<String>,
@@ -229,7 +308,7 @@ impl App {
             mode: Mode::Normal,
             panes: vec![pane],
             active_pane: 0,
-            layout: SplitLayout::Single,
+            layout: PaneLayout::Leaf(0),
             register: Vec::new(),
             visual_anchor: None,
             key_seq: Vec::new(),
@@ -497,8 +576,8 @@ impl App {
                 self.register = vec![line];
                 self.message = Some("1 line yanked".into());
             }
-            Action::SplitHorizontal => self.split(SplitLayout::Horizontal),
-            Action::SplitVertical => self.split(SplitLayout::Vertical),
+            Action::SplitHorizontal => self.split(SplitDir::Horizontal),
+            Action::SplitVertical => self.split(SplitDir::Vertical),
             Action::ClosePane => self.close_active_pane(),
             Action::NextPane => self.cycle_pane(),
             Action::FocusPane(dir) => self.focus_pane(dir),
@@ -640,8 +719,8 @@ impl App {
                 self.save_active();
                 self.should_quit = true;
             }
-            "sp" | "split" => self.split(SplitLayout::Horizontal),
-            "vs" | "vsplit" => self.split(SplitLayout::Vertical),
+            "sp" | "split" => self.split(SplitDir::Horizontal),
+            "vs" | "vsplit" => self.split(SplitDir::Vertical),
             "e" | "edit" => {
                 if let Some(path) = parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()) {
                     if Path::new(path).is_dir() {
@@ -858,18 +937,15 @@ impl App {
 
     // ── Window management ─────────────────────────────────────────────────────
 
-    fn split(&mut self, layout: SplitLayout) {
-        if self.panes.len() >= 2 {
-            self.message = Some("At most 2 panes supported".into());
-            return;
-        }
+    fn split(&mut self, dir: SplitDir) {
         let new_pane = match &self.panes[self.active_pane].file_path {
             Some(p) => Pane::from_file(p.to_str().unwrap_or("")).unwrap_or_else(|_| Pane::empty()),
             None => Pane::empty(),
         };
+        let new_idx = self.panes.len();
         self.panes.push(new_pane);
-        self.layout = layout;
-        self.active_pane = 1; // focus the new pane
+        self.layout.split_leaf(self.active_pane, new_idx, dir);
+        self.active_pane = new_idx; // focus the new pane
     }
 
     fn close_active_pane(&mut self) {
@@ -882,29 +958,65 @@ impl App {
             }
             return;
         }
-        self.panes.remove(self.active_pane);
-        self.layout = SplitLayout::Single;
-        self.active_pane = 0;
+        let closed = self.active_pane;
+        self.layout.remove_leaf(closed);
+        self.layout.renumber_after_removal(closed);
+        self.panes.remove(closed);
+        self.active_pane = closed.min(self.panes.len() - 1);
     }
 
     fn cycle_pane(&mut self) {
-        if self.panes.len() > 1 {
-            self.active_pane = (self.active_pane + 1) % self.panes.len();
+        let leaves = self.layout.leaves();
+        if leaves.len() > 1 {
+            if let Some(pos) = leaves.iter().position(|&i| i == self.active_pane) {
+                self.active_pane = leaves[(pos + 1) % leaves.len()];
+            }
         }
     }
 
+    /// Move focus to the geometrically nearest pane in `dir`, using the pane
+    /// rects computed by the last render pass. Works for any tree shape
+    /// (nested hsplits/vsplits), not just a simple 2-pane layout.
     fn focus_pane(&mut self, dir: PaneDir) {
-        if self.panes.len() < 2 {
+        if self.panes.len() < 2 || self.pane_rects.len() != self.panes.len() {
             return;
         }
-        match (&self.layout, dir) {
-            // Horizontal split: panes stacked, navigate up/down
-            (SplitLayout::Horizontal, PaneDir::Down) => self.active_pane = 1,
-            (SplitLayout::Horizontal, PaneDir::Up) => self.active_pane = 0,
-            // Vertical split: panes side by side, navigate left/right
-            (SplitLayout::Vertical, PaneDir::Right) => self.active_pane = 1,
-            (SplitLayout::Vertical, PaneDir::Left) => self.active_pane = 0,
-            _ => {}
+        let cur = self.pane_rects[self.active_pane];
+        let cur_center_x = cur.x as i32 + cur.width as i32 / 2;
+        let cur_center_y = cur.y as i32 + cur.height as i32 / 2;
+
+        let mut best: Option<(usize, i32)> = None;
+        for (i, rect) in self.pane_rects.iter().enumerate() {
+            if i == self.active_pane {
+                continue;
+            }
+            let in_direction = match dir {
+                PaneDir::Left => rect.x as i32 + rect.width as i32 <= cur.x as i32,
+                PaneDir::Right => rect.x as i32 >= cur.x as i32 + cur.width as i32,
+                PaneDir::Up => rect.y as i32 + rect.height as i32 <= cur.y as i32,
+                PaneDir::Down => rect.y as i32 >= cur.y as i32 + cur.height as i32,
+            };
+            if !in_direction {
+                continue;
+            }
+            let center_x = rect.x as i32 + rect.width as i32 / 2;
+            let center_y = rect.y as i32 + rect.height as i32 / 2;
+            // Primary-axis gap dominates; cross-axis offset breaks ties so the
+            // best-aligned neighbor wins over a merely closer one.
+            let dist = match dir {
+                PaneDir::Left | PaneDir::Right => {
+                    (center_x - cur_center_x).abs() + (center_y - cur_center_y).abs() * 4
+                }
+                PaneDir::Up | PaneDir::Down => {
+                    (center_y - cur_center_y).abs() + (center_x - cur_center_x).abs() * 4
+                }
+            };
+            if best.is_none_or(|(_, best_dist)| dist < best_dist) {
+                best = Some((i, dist));
+            }
+        }
+        if let Some((idx, _)) = best {
+            self.active_pane = idx;
         }
     }
 

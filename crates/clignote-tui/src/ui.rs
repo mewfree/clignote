@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Mode, SplitLayout};
+use crate::app::{App, Mode, PaneLayout, SplitDir};
 use crate::git::LineStatus;
 use crate::pane::Pane;
 
@@ -52,26 +52,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let status_area = main_and_bars[1];
     let cmdline_area = main_and_bars[2];
 
-    // Compute pane rects for this render pass and store them in App
-    let pane_rects: Vec<Rect> = match app.layout {
-        SplitLayout::Single => vec![editor_area],
-        // Horizontal split (C-w s): panes stacked top/bottom — horizontal dividing line
-        SplitLayout::Horizontal => {
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(editor_area);
-            vec![rows[0], rows[1]]
-        }
-        // Vertical split (C-w v): panes side by side — vertical dividing line
-        SplitLayout::Vertical => {
-            let cols = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(editor_area);
-            vec![cols[0], cols[1]]
-        }
-    };
+    // Compute pane rects for this render pass and store them in App, indexed
+    // by pane index (not tree position) so click/focus lookups stay simple.
+    let mut pane_hits: Vec<(usize, Rect)> = Vec::new();
+    layout_rects(&app.layout, editor_area, &mut pane_hits);
+    let mut pane_rects = vec![Rect::default(); app.panes.len()];
+    for (idx, rect) in &pane_hits {
+        pane_rects[*idx] = *rect;
+    }
     app.pane_rects = pane_rects.clone();
 
     // Snapshot search state so we can borrow panes mutably inside the loop.
@@ -128,20 +116,75 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    // Draw a vertical divider between vertical-split (side by side) panes
-    if app.layout == SplitLayout::Vertical && pane_rects.len() == 2 {
-        let div_x = pane_rects[1].x;
-        let div_style = Style::default().fg(Color::DarkGray);
-        for y in editor_area.y..editor_area.y + editor_area.height {
-            frame.render_widget(
-                Paragraph::new("│").style(div_style),
-                Rect::new(div_x.saturating_sub(1), y, 1, 1),
-            );
-        }
-    }
+    draw_dividers(frame, &app.layout, editor_area);
 
     render_status(frame, app, status_area);
     render_cmdline(frame, app, cmdline_area);
+}
+
+/// Recursively split `area` per the window layout tree, collecting
+/// `(pane_idx, Rect)` pairs in tree order.
+fn layout_rects(layout: &PaneLayout, area: Rect, out: &mut Vec<(usize, Rect)>) {
+    match layout {
+        PaneLayout::Leaf(idx) => out.push((*idx, area)),
+        PaneLayout::Split { dir, children } => {
+            let direction = match dir {
+                SplitDir::Horizontal => Direction::Vertical, // stacked top/bottom
+                SplitDir::Vertical => Direction::Horizontal, // side by side
+            };
+            let constraints: Vec<Constraint> =
+                children.iter().map(|_| Constraint::Fill(1)).collect();
+            let rects = Layout::default()
+                .direction(direction)
+                .constraints(constraints)
+                .split(area);
+            for (child, rect) in children.iter().zip(rects.iter()) {
+                layout_rects(child, *rect, out);
+            }
+        }
+    }
+}
+
+/// Recursively draw a divider line at each split boundary in the window
+/// layout tree (vertical `│` between side-by-side panes, horizontal `─`
+/// between stacked panes).
+fn draw_dividers(frame: &mut Frame, layout: &PaneLayout, area: Rect) {
+    let PaneLayout::Split { dir, children } = layout else {
+        return;
+    };
+    let direction = match dir {
+        SplitDir::Horizontal => Direction::Vertical,
+        SplitDir::Vertical => Direction::Horizontal,
+    };
+    let constraints: Vec<Constraint> = children.iter().map(|_| Constraint::Fill(1)).collect();
+    let rects = Layout::default()
+        .direction(direction)
+        .constraints(constraints)
+        .split(area);
+
+    let div_style = Style::default().fg(Color::DarkGray);
+    for rect in rects.iter().skip(1) {
+        match dir {
+            SplitDir::Vertical => {
+                let x = rect.x.saturating_sub(1);
+                for y in area.y..area.y + area.height {
+                    frame
+                        .render_widget(Paragraph::new("│").style(div_style), Rect::new(x, y, 1, 1));
+                }
+            }
+            SplitDir::Horizontal => {
+                let y = rect.y.saturating_sub(1);
+                frame.render_widget(
+                    Paragraph::new("─".repeat(area.width as usize)).style(div_style),
+                    Rect::new(area.x, y, area.width, 1),
+                );
+            }
+        }
+    }
+
+    for (child, rect) in children.iter().zip(rects.iter()) {
+        draw_dividers(frame, child, *rect);
+    }
 }
 
 // ── Directory browser renderer ─────────────────────────────────────────────────
@@ -892,10 +935,10 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(|n| n.to_str())
         .unwrap_or("[no file]");
     let modified = if pane.modified { " [+]" } else { "" };
-    let split_indicator = match app.layout {
-        SplitLayout::Single => "",
-        SplitLayout::Horizontal => "  [hsplit]",
-        SplitLayout::Vertical => "  [vsplit]",
+    let split_indicator = if app.panes.len() > 1 {
+        format!("  [{} panes]", app.panes.len())
+    } else {
+        String::new()
     };
 
     let file_span = Span::styled(

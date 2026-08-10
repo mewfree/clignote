@@ -51,7 +51,7 @@
 ** DONE render links: [[url]] and [[url][desc]] styled (dim brackets, cyan desc)
 ** DONE open link under cursor with <Enter> (macOS open / xdg-open)
 ** TODO which-key floating popup (overlay showing keys after a prefix)
-** TODO more split layouts (3+ panes)
+** DONE more split layouts (3+ panes, arbitrary nested hsplit/vsplit tree)
 ** DONE buffer list / switcher (SPC b b)
 
 ** cli: binary entry point (cln)
