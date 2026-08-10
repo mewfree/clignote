@@ -26,6 +26,10 @@ pub enum Action {
     SaveFile,
     QuitAll,
     ToggleLinkConceal,
+    BufferList,
+    NextBuffer,
+    PrevBuffer,
+    KillBuffer,
 }
 
 // ── Sequence matching ─────────────────────────────────────────────────────────
@@ -69,6 +73,11 @@ fn exact_match(s: &str) -> Option<Action> {
         "SPC w l" => Some(Action::FocusPane(PaneDir::Right)),
         "SPC q q" => Some(Action::QuitAll),
         "SPC t l" => Some(Action::ToggleLinkConceal),
+        // Doom/Spacemacs SPC b buffer commands
+        "SPC b b" => Some(Action::BufferList),
+        "SPC b n" => Some(Action::NextBuffer),
+        "SPC b p" => Some(Action::PrevBuffer),
+        "SPC b d" | "SPC b k" => Some(Action::KillBuffer),
         _ => None,
     }
 }
@@ -98,7 +107,7 @@ pub fn hint_for_prefix(prefix: &str) -> &'static str {
         "SPC" => "f: file  w: window  b: buffer  q: quit  t: toggle",
         "SPC f" => "s: save",
         "SPC w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
-        "SPC b" => "(buffer commands — coming soon)",
+        "SPC b" => "b: list  n: next  p: prev  d/k: kill",
         "SPC q" => "q: quit",
         "SPC t" => "l: toggle link display (label/target)",
         _ => "",

@@ -102,6 +102,8 @@ pub enum Mode {
     },
     /// Minimal directory browser (`:e <dir>`, `:Ex`).
     Browse,
+    /// Buffer switcher (`SPC b b`).
+    BufferList,
 }
 
 impl Mode {
@@ -114,6 +116,7 @@ impl Mode {
             Mode::Visual { line_wise: true } => "V-LINE",
             Mode::Visual { line_wise: false } => "VISUAL",
             Mode::Browse => "BROWSE",
+            Mode::BufferList => "BUFFERS",
         }
     }
 }
@@ -188,6 +191,12 @@ pub struct App {
     pub browse_selected: usize,
     /// First visible entry index (vertical scroll), kept in sync by the renderer.
     pub browse_scroll: usize,
+
+    /// Most-recently-used list of file paths opened this session (front = most recent).
+    pub buffers: Vec<StdPathBuf>,
+    /// Selection state for Mode::BufferList.
+    pub buf_list_selected: usize,
+    pub buf_list_scroll: usize,
 }
 
 fn is_web_url(url: &str) -> bool {
@@ -212,6 +221,10 @@ impl App {
             Some(p) => Pane::from_file(p)?,
             None => Pane::empty(),
         };
+        let buffers = match &pane.file_path {
+            Some(p) => vec![p.clone()],
+            None => Vec::new(),
+        };
         Ok(Self {
             mode: Mode::Normal,
             panes: vec![pane],
@@ -234,6 +247,9 @@ impl App {
             browse_entries: Vec::new(),
             browse_selected: 0,
             browse_scroll: 0,
+            buffers,
+            buf_list_selected: 0,
+            buf_list_scroll: 0,
         })
     }
 
@@ -258,6 +274,7 @@ impl App {
             Mode::Search => self.handle_search(key),
             Mode::Visual { line_wise } => self.handle_visual(key, *line_wise),
             Mode::Browse => self.handle_browse(key),
+            Mode::BufferList => self.handle_buffer_list(key),
         }
     }
 
@@ -501,6 +518,10 @@ impl App {
                     self.should_quit = true;
                 }
             }
+            Action::BufferList => self.enter_buffer_list(),
+            Action::NextBuffer => self.cycle_buffer(1),
+            Action::PrevBuffer => self.cycle_buffer(-1),
+            Action::KillBuffer => self.kill_current_buffer(),
         }
     }
 
@@ -910,6 +931,9 @@ impl App {
         }
         match Pane::from_file(path) {
             Ok(pane) => {
+                if let Some(p) = pane.file_path.clone() {
+                    self.record_buffer(p);
+                }
                 self.panes[self.active_pane] = pane;
                 self.visual_anchor = None;
                 self.key_seq.clear();
@@ -919,6 +943,109 @@ impl App {
                 self.message = Some(format!("Cannot open \"{}\": {}", path, e));
             }
         }
+    }
+
+    // ── Buffer list ───────────────────────────────────────────────────────────
+
+    /// Move `path` to the front of the MRU buffer list, deduping.
+    fn record_buffer(&mut self, path: StdPathBuf) {
+        self.buffers.retain(|p| p != &path);
+        self.buffers.insert(0, path);
+    }
+
+    fn enter_buffer_list(&mut self) {
+        self.buf_list_selected = self
+            .pane()
+            .file_path
+            .as_ref()
+            .and_then(|active| self.buffers.iter().position(|p| p == active))
+            .unwrap_or(0);
+        self.buf_list_scroll = 0;
+        self.mode = Mode::BufferList;
+        self.key_seq.clear();
+    }
+
+    fn handle_buffer_list(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.buffers.is_empty() {
+                    self.buf_list_selected =
+                        (self.buf_list_selected + 1).min(self.buffers.len() - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.buf_list_selected = self.buf_list_selected.saturating_sub(1);
+            }
+            KeyCode::Char('d') => {
+                if self.buf_list_selected < self.buffers.len() {
+                    self.buffers.remove(self.buf_list_selected);
+                    if self.buf_list_selected >= self.buffers.len() {
+                        self.buf_list_selected = self.buffers.len().saturating_sub(1);
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let Some(path) = self.buffers.get(self.buf_list_selected).cloned() else {
+                    self.mode = Mode::Normal;
+                    return;
+                };
+                if let Some(path_str) = path.to_str().map(|s| s.to_string()) {
+                    self.open_file(&path_str, false);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Switch the active pane to the next/previous buffer in the MRU list
+    /// (`dir` = +1 or -1), relative to the pane's current file.
+    fn cycle_buffer(&mut self, dir: isize) {
+        if self.buffers.len() < 2 {
+            self.message = Some("No other buffers".into());
+            return;
+        }
+        let current = self
+            .pane()
+            .file_path
+            .as_ref()
+            .and_then(|active| self.buffers.iter().position(|p| p == active));
+        let len = self.buffers.len() as isize;
+        let next_idx = match current {
+            Some(idx) => (idx as isize + dir).rem_euclid(len) as usize,
+            None => 0,
+        };
+        let Some(path_str) = self.buffers[next_idx].to_str().map(|s| s.to_string()) else {
+            return;
+        };
+        self.open_file(&path_str, false);
+    }
+
+    /// Forget the active pane's file from the buffer list and switch the
+    /// pane to the next most-recent buffer (or an empty buffer if none left).
+    fn kill_current_buffer(&mut self) {
+        if self.pane().modified {
+            self.message = Some("Unsaved changes — save first with :w".into());
+            return;
+        }
+        let Some(path) = self.pane().file_path.clone() else {
+            self.message = Some("No file buffer to kill".into());
+            return;
+        };
+        self.buffers.retain(|p| p != &path);
+        match self.buffers.first().cloned() {
+            Some(next) => {
+                if let Some(path_str) = next.to_str().map(|s| s.to_string()) {
+                    self.open_file(&path_str, false);
+                }
+            }
+            None => {
+                self.panes[self.active_pane] = Pane::empty();
+            }
+        }
+        self.message = Some(format!("Killed buffer {}", path.display()));
     }
 
     // ── Directory browser ─────────────────────────────────────────────────────

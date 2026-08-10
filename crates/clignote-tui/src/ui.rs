@@ -59,6 +59,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if app.mode == Mode::BufferList {
+        render_buffer_list(frame, app, editor_area);
+        render_status(frame, app, status_area);
+        render_cmdline(frame, app, cmdline_area);
+        return;
+    }
+
     // Compute pane rects for this render pass and store them in App
     let pane_rects: Vec<Rect> = match app.layout {
         SplitLayout::Single => vec![editor_area],
@@ -182,6 +189,57 @@ fn render_browse(frame: &mut Frame, app: &mut App, area: Rect) {
                 style = style.bg(Color::White).fg(Color::Black);
             }
             lines.push(Line::from(Span::styled(format!(" {} ", label), style)));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn render_buffer_list(frame: &mut Frame, app: &mut App, area: Rect) {
+    const HEADER_ROWS: usize = 2; // title line + blank line
+
+    let list_height = (area.height as usize).saturating_sub(HEADER_ROWS);
+    if list_height > 0 {
+        if app.buf_list_selected < app.buf_list_scroll {
+            app.buf_list_scroll = app.buf_list_selected;
+        } else if app.buf_list_selected >= app.buf_list_scroll + list_height {
+            app.buf_list_scroll = app.buf_list_selected - list_height + 1;
+        }
+    }
+
+    let header = Line::from(Span::styled(
+        "Buffers  (RET open, d kill, Esc cancel)",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    let active_path = app.pane().file_path.clone();
+    let mut lines: Vec<Line> = vec![header, Line::default()];
+    if app.buffers.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " (no buffers) ",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        let end = (app.buf_list_scroll + list_height).min(app.buffers.len());
+        for (i, path) in app.buffers[app.buf_list_scroll..end].iter().enumerate() {
+            let idx = app.buf_list_scroll + i;
+            let selected = idx == app.buf_list_selected;
+            let is_active = active_path.as_deref() == Some(path.as_path());
+            let marker = if is_active { "* " } else { "  " };
+            let mut style = if is_active {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            if selected {
+                style = style.bg(Color::White).fg(Color::Black);
+            }
+            lines.push(Line::from(Span::styled(
+                format!(" {}{} ", marker, path.display()),
+                style,
+            )));
         }
     }
 
@@ -811,6 +869,10 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
         Mode::Browse => Style::default()
+            .bg(Color::Cyan)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+        Mode::BufferList => Style::default()
             .bg(Color::Cyan)
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
