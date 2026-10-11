@@ -1,5 +1,7 @@
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use crate::fold::{self, Folds};
 use crate::git::{self, LineStatus};
 use crate::links;
 
@@ -39,6 +41,7 @@ pub struct Pane {
     /// True while an insert session has already recorded its undo snapshot,
     /// so a run of typing undoes as one step.
     insert_open: bool,
+    folds: Folds,
 }
 
 impl Pane {
@@ -74,6 +77,7 @@ impl Pane {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             insert_open: false,
+            folds: Folds::default(),
         }
     }
 
@@ -102,15 +106,75 @@ impl Pane {
         self.cursor_col = self.cursor_col.min(max);
     }
 
+    /// Row ranges currently hidden by folds (sorted, disjoint).
+    pub fn fold_ranges(&self) -> Vec<Range<usize>> {
+        self.folds.ranges(&self.lines)
+    }
+
+    /// Whether the heading at `row` is folded over a non-empty range.
+    pub fn is_fold_start(ranges: &[Range<usize>], row: usize) -> bool {
+        ranges.binary_search_by_key(&(row + 1), |r| r.start).is_ok()
+    }
+
+    /// Buffer rows shown on screen, top to bottom, skipping folded rows.
+    /// Shorter than `height` when the buffer ends first.
+    pub fn visible_rows(&self, ranges: &[Range<usize>], height: usize) -> Vec<usize> {
+        let mut rows = Vec::with_capacity(height);
+        let mut row = self.viewport_top;
+        while rows.len() < height && row < self.lines.len() {
+            rows.push(row);
+            match fold::next_visible(ranges, self.lines.len(), row) {
+                Some(next) => row = next,
+                None => break,
+            }
+        }
+        rows
+    }
+
+    /// Buffer row displayed `offset` visible rows below the viewport top.
+    pub fn row_at_screen_offset(&self, offset: usize) -> usize {
+        let ranges = self.fold_ranges();
+        let mut row = self.viewport_top.min(self.lines.len().saturating_sub(1));
+        for _ in 0..offset {
+            match fold::next_visible(&ranges, self.lines.len(), row) {
+                Some(next) => row = next,
+                None => break,
+            }
+        }
+        row
+    }
+
     /// Keep the cursor inside the visible viewport (vertical and horizontal).
     pub fn scroll_to_cursor(&mut self, height: usize, width: usize) {
-        scroll_into_view(&mut self.viewport_top, self.cursor_row, height);
+        let ranges = self.fold_ranges();
+        // The viewport may start inside a freshly folded region.
+        if let Some(r) = fold::range_containing(&ranges, self.viewport_top) {
+            self.viewport_top = r.start - 1;
+        }
+        if height > 0 {
+            if self.cursor_row < self.viewport_top {
+                self.viewport_top = self.cursor_row;
+            } else {
+                let on_screen = fold::visible_between(&ranges, self.viewport_top, self.cursor_row);
+                for _ in 0..(on_screen + 1).saturating_sub(height) {
+                    match fold::next_visible(&ranges, self.lines.len(), self.viewport_top) {
+                        Some(next) => self.viewport_top = next,
+                        None => break,
+                    }
+                }
+            }
+        }
         scroll_into_view(&mut self.viewport_left, self.cursor_col, width);
     }
 
     pub fn scroll_down(&mut self, n: usize) {
-        let max_top = self.lines.len().saturating_sub(1);
-        self.viewport_top = (self.viewport_top + n).min(max_top);
+        let ranges = self.fold_ranges();
+        for _ in 0..n {
+            match fold::next_visible(&ranges, self.lines.len(), self.viewport_top) {
+                Some(next) => self.viewport_top = next,
+                None => break,
+            }
+        }
         self.cursor_row = self.cursor_row.max(self.viewport_top);
         if self.cursor_row >= self.lines.len() {
             self.cursor_row = self.lines.len().saturating_sub(1);
@@ -119,8 +183,60 @@ impl Pane {
     }
 
     pub fn scroll_up(&mut self, n: usize) {
-        self.viewport_top = self.viewport_top.saturating_sub(n);
+        let ranges = self.fold_ranges();
+        for _ in 0..n {
+            match fold::prev_visible(&ranges, self.viewport_top) {
+                Some(prev) => self.viewport_top = prev,
+                None => break,
+            }
+        }
         self.clamp_col();
+    }
+
+    // ── Folding ───────────────────────────────────────────────────────────────
+
+    /// If the cursor ended up inside a folded region, move it to the heading.
+    fn snap_cursor_visible(&mut self) {
+        let ranges = self.fold_ranges();
+        if let Some(r) = fold::range_containing(&ranges, self.cursor_row) {
+            self.cursor_row = r.start - 1;
+            self.clamp_col();
+        }
+    }
+
+    /// `TAB` on a heading: cycle FOLDED → CHILDREN → SUBTREE. Returns a
+    /// status message.
+    pub fn cycle_fold(&mut self) -> String {
+        match self.folds.cycle_heading(&self.lines, self.cursor_row) {
+            Some(state) => {
+                self.snap_cursor_visible();
+                state.to_string()
+            }
+            None => "Nothing to fold here".to_string(),
+        }
+    }
+
+    /// `S-TAB`: cycle the whole buffer OVERVIEW → CONTENTS → SHOW ALL.
+    pub fn cycle_global_fold(&mut self) -> String {
+        match self.folds.cycle_global(&self.lines) {
+            Some(state) => {
+                self.snap_cursor_visible();
+                state.label().to_string()
+            }
+            None => "No headings".to_string(),
+        }
+    }
+
+    /// Unfold whatever hides `row`, e.g. when jumping to a search match.
+    pub fn reveal(&mut self, row: usize) {
+        self.folds.reveal(&self.lines, row);
+    }
+
+    /// Row where a line opened "after" `row` goes: past the hidden body when
+    /// `row` is a folded heading.
+    fn row_after(&self, row: usize) -> usize {
+        let ranges = self.fold_ranges();
+        fold::range_containing(&ranges, row + 1).map_or(row + 1, |r| r.end)
     }
 
     // ── Movement ──────────────────────────────────────────────────────────────
@@ -136,13 +252,27 @@ impl Pane {
         }
     }
 
+    /// Move up `n` visible rows (folded regions count as their heading).
     pub fn move_up(&mut self, n: usize) {
-        self.cursor_row = self.cursor_row.saturating_sub(n);
+        let ranges = self.fold_ranges();
+        for _ in 0..n {
+            match fold::prev_visible(&ranges, self.cursor_row) {
+                Some(prev) => self.cursor_row = prev,
+                None => break,
+            }
+        }
         self.clamp_col();
     }
 
+    /// Move down `n` visible rows (folded regions count as their heading).
     pub fn move_down(&mut self, n: usize) {
-        self.cursor_row = (self.cursor_row + n).min(self.lines.len().saturating_sub(1));
+        let ranges = self.fold_ranges();
+        for _ in 0..n {
+            match fold::next_visible(&ranges, self.lines.len(), self.cursor_row) {
+                Some(next) => self.cursor_row = next,
+                None => break,
+            }
+        }
         self.clamp_col();
     }
 
@@ -189,6 +319,7 @@ impl Pane {
 
     pub fn move_file_end(&mut self) {
         self.cursor_row = self.lines.len().saturating_sub(1);
+        self.snap_cursor_visible();
         self.clamp_col();
     }
 
@@ -199,6 +330,9 @@ impl Pane {
     }
 
     fn restore(&mut self, (lines, row, col): Snapshot) {
+        if lines.len() != self.lines.len() {
+            self.folds.clear();
+        }
         self.lines = lines;
         self.cursor_row = row;
         self.cursor_col = col;
@@ -262,6 +396,7 @@ impl Pane {
             return removed;
         }
         let removed = self.lines.remove(self.cursor_row);
+        self.folds.lines_removed(self.cursor_row, 1);
         if self.cursor_row >= self.lines.len() {
             self.cursor_row = self.lines.len().saturating_sub(1);
         }
@@ -278,6 +413,7 @@ impl Pane {
         let (lo, hi) = (start.min(end), start.max(end));
 
         let removed: Vec<String> = self.lines.drain(lo..=hi).collect();
+        self.folds.lines_removed(lo, hi - lo + 1);
         if self.lines.is_empty() {
             self.lines.push(String::new());
         }
@@ -325,6 +461,7 @@ impl Pane {
 
         // Replace lines sr..=er with the joined result
         self.lines.splice(sr..=er, [joined]);
+        self.folds.lines_removed(sr + 1, er - sr);
         self.cursor_row = sr;
         self.cursor_col = sc.min(self.lines[sr].len().saturating_sub(1));
         self.modified = true;
@@ -343,9 +480,10 @@ impl Pane {
 
     pub fn paste_lines_after(&mut self, lines: &[String]) {
         self.snapshot();
-        let insert_at = self.cursor_row + 1;
+        let insert_at = self.row_after(self.cursor_row);
         self.lines
             .splice(insert_at..insert_at, lines.iter().cloned());
+        self.folds.lines_inserted(insert_at, lines.len());
         self.cursor_row = insert_at;
         self.modified = true;
     }
@@ -354,6 +492,7 @@ impl Pane {
         self.snapshot();
         let at = self.cursor_row;
         self.lines.splice(at..at, lines.iter().cloned());
+        self.folds.lines_inserted(at, lines.len());
         self.modified = true;
     }
 
@@ -410,6 +549,7 @@ impl Pane {
             self.modified = true;
         } else {
             let current = self.lines.remove(self.cursor_row);
+            self.folds.lines_removed(self.cursor_row, 1);
             self.cursor_row -= 1;
             self.cursor_col = self.lines[self.cursor_row].len();
             self.lines[self.cursor_row].push_str(&current);
@@ -422,6 +562,7 @@ impl Pane {
         let rest = self.lines[self.cursor_row].split_off(self.cursor_col);
         self.cursor_row += 1;
         self.lines.insert(self.cursor_row, rest);
+        self.folds.lines_inserted(self.cursor_row, 1);
         self.cursor_col = 0;
         self.modified = true;
     }
@@ -429,8 +570,10 @@ impl Pane {
     pub fn open_line_below(&mut self) {
         self.snapshot();
         self.insert_open = true;
-        self.lines.insert(self.cursor_row + 1, String::new());
-        self.cursor_row += 1;
+        let at = self.row_after(self.cursor_row);
+        self.lines.insert(at, String::new());
+        self.folds.lines_inserted(at, 1);
+        self.cursor_row = at;
         self.cursor_col = 0;
         self.modified = true;
     }
@@ -438,6 +581,7 @@ impl Pane {
     pub fn open_line_above(&mut self) {
         self.snapshot();
         self.insert_open = true;
+        self.folds.lines_inserted(self.cursor_row, 1);
         self.lines.insert(self.cursor_row, String::new());
         self.cursor_col = 0;
         self.modified = true;
@@ -511,6 +655,77 @@ mod tests {
         let mut p = Pane::empty();
         p.lines = vec![s.to_string()];
         p
+    }
+
+    fn pane_with_doc(s: &str) -> Pane {
+        let mut p = Pane::empty();
+        p.lines = s.lines().map(str::to_owned).collect();
+        p
+    }
+
+    const DOC: &str = "* A\na body\n** A1\nx\n* B\nb body";
+
+    #[test]
+    fn folded_rows_are_skipped_by_movement() {
+        let mut p = pane_with_doc(DOC);
+        assert_eq!(p.cycle_fold(), "FOLDED");
+        p.move_down(1);
+        assert_eq!(p.cursor_row, 4); // straight to * B
+        p.move_up(1);
+        assert_eq!(p.cursor_row, 0);
+        p.move_file_end();
+        assert_eq!(p.cursor_row, 5);
+    }
+
+    #[test]
+    fn visible_rows_skip_folds_and_screen_offset_matches() {
+        let mut p = pane_with_doc(DOC);
+        p.cycle_fold();
+        let ranges = p.fold_ranges();
+        assert_eq!(p.visible_rows(&ranges, 10), vec![0, 4, 5]);
+        assert_eq!(p.row_at_screen_offset(1), 4);
+    }
+
+    #[test]
+    fn global_fold_moves_cursor_to_heading() {
+        let mut p = pane_with_doc(DOC);
+        p.cursor_row = 3;
+        assert_eq!(p.cycle_global_fold(), "OVERVIEW");
+        assert_eq!(p.cursor_row, 0); // was inside * A, snapped to its heading
+    }
+
+    #[test]
+    fn folds_follow_edits_above_them() {
+        let mut p = pane_with_doc(DOC);
+        p.cursor_row = 4;
+        p.cycle_fold(); // fold * B
+        p.cursor_row = 0;
+        p.open_line_above();
+        p.cursor_row = 5;
+        assert_eq!(p.lines[5], "* B");
+        let ranges = p.fold_ranges();
+        assert_eq!(ranges, vec![6..7]);
+    }
+
+    #[test]
+    fn open_line_below_folded_heading_goes_after_the_fold() {
+        let mut p = pane_with_doc(DOC);
+        p.cycle_fold();
+        p.open_line_below();
+        assert_eq!(p.cursor_row, 4);
+        assert_eq!(p.lines[4], "");
+        assert_eq!(p.lines[5], "* B");
+    }
+
+    #[test]
+    fn undo_that_changes_line_count_clears_folds() {
+        let mut p = pane_with_doc(DOC);
+        p.cursor_row = 5;
+        p.open_line_below();
+        p.cursor_row = 0;
+        p.cycle_fold();
+        p.undo();
+        assert!(p.fold_ranges().is_empty());
     }
 
     fn type_str(p: &mut Pane, s: &str) {

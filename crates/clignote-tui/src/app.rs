@@ -386,8 +386,7 @@ impl App {
         } else {
             rect.x as usize
         };
-        let buf_row =
-            (pane.viewport_top + row - rect.y as usize).min(pane.lines.len().saturating_sub(1));
+        let buf_row = pane.row_at_screen_offset(row - rect.y as usize);
         let buf_col = (pane.viewport_left + col.saturating_sub(content_x))
             .min(pane.lines[buf_row].len().saturating_sub(1));
         pane.cursor_row = buf_row;
@@ -514,6 +513,8 @@ impl App {
                 self.search_matches.clear();
                 self.mode = Mode::Search;
             }
+            KeyCode::Tab => self.message = Some(self.pane_mut().cycle_fold()),
+            KeyCode::BackTab => self.message = Some(self.pane_mut().cycle_global_fold()),
             KeyCode::Char('n') => self.next_search_match(),
             KeyCode::Char('N') => self.prev_search_match(),
 
@@ -820,6 +821,7 @@ impl App {
     fn jump_to_current_match(&mut self) {
         if let Some(&(row, col)) = self.search_matches.get(self.search_match_idx) {
             let pane = self.pane_mut();
+            pane.reveal(row);
             pane.cursor_row = row;
             pane.cursor_col = col;
         }

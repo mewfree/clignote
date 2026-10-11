@@ -62,6 +62,8 @@ cln                   # open file picker in current directory
 | ~p P~     | paste after / before          |
 | ~u~       | undo                          |
 | ~C-r~     | redo                          |
+| ~Tab~     | fold heading (cycle)          |
+| ~S-Tab~   | fold all (cycle)              |
 | ~:w~      | save                          |
 | ~:q~      | quit                          |
 | ~:wq~     | save and quit                 |

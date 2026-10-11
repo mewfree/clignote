@@ -297,9 +297,14 @@ fn render_pane(
     pane.scroll_to_cursor(height, width);
     pane.recompute_git_diff();
 
+    // Buffer rows on screen, skipping folded regions.
+    let fold_ranges = pane.fold_ranges();
+    let rows = pane.visible_rows(&fold_ranges, height);
+
     // Render git gutter
-    let gutter_lines: Vec<Line> = (pane.viewport_top..pane.viewport_top + height)
-        .map(|row| {
+    let gutter_lines: Vec<Line> = rows
+        .iter()
+        .map(|&row| {
             let status = pane.git_diff.get(row).copied().unwrap_or_default();
             let (ch, style) = match status {
                 LineStatus::Added => ("+", Style::default().fg(Color::Green)),
@@ -312,8 +317,9 @@ fn render_pane(
     frame.render_widget(Paragraph::new(gutter_lines), gutter_area);
 
     // Render content (full lines; horizontal scroll applied via Paragraph)
-    let visible: Vec<Line> = (pane.viewport_top..pane.viewport_top + height)
-        .map(|row| match pane.lines.get(row) {
+    let visible: Vec<Line> = rows
+        .iter()
+        .map(|&row| match pane.lines.get(row) {
             None => Line::default(),
             Some(line) => {
                 // Matches are sorted by (row, col): binary-search this row's run.
@@ -343,7 +349,13 @@ fn render_pane(
                             && row == pane.cursor_row
                             && matches!(pane_ctx.mode, Mode::Insert)),
                 };
-                build_line(line, row, &ctx)
+                let mut rendered = build_line(line, row, &ctx);
+                if Pane::is_fold_start(&fold_ranges, row) {
+                    rendered
+                        .spans
+                        .push(Span::styled(" […]", Style::default().fg(Color::DarkGray)));
+                }
+                rendered
             }
         })
         .collect();
@@ -355,9 +367,11 @@ fn render_pane(
 
     // Terminal cursor position (for blinking cursor in Insert)
     if is_active {
-        let screen_row = content_area.y + (pane.cursor_row - pane.viewport_top) as u16;
-        let screen_col = content_area.x + (pane.cursor_col - pane.viewport_left) as u16;
-        frame.set_cursor_position((screen_col, screen_row));
+        if let Some(offset) = rows.iter().position(|&r| r == pane.cursor_row) {
+            let screen_row = content_area.y + offset as u16;
+            let screen_col = content_area.x + (pane.cursor_col - pane.viewport_left) as u16;
+            frame.set_cursor_position((screen_col, screen_row));
+        }
     }
 }
 
