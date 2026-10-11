@@ -36,7 +36,7 @@
 ** DONE implement visual mode (v, V, line selection)
 ** TODO implement operator + motion pattern (d/y/c + motions: d$, yiw, c3j, etc.)
 ** DONE implement delete line (dd), yank line (yy), paste (p, P)
-** TODO implement undo / redo (u, C-r)
+** DONE implement undo / redo (u, C-r)
 ** DONE implement command mode (:w, :q, :wq, :e <file>)
 ** DONE implement status bar (mode indicator, filename, cursor position)
 ** DONE implement file open from CLI argument

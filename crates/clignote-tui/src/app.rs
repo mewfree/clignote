@@ -465,6 +465,11 @@ impl App {
                     self.message = Some("Already at oldest change".into());
                 }
             }
+            KeyCode::Char('r') if ctrl => {
+                if !self.pane_mut().redo() {
+                    self.message = Some("Already at newest change".into());
+                }
+            }
 
             // ── Delete ───────────────────────────────────────────────────────
             KeyCode::Char('x') => self.pane_mut().delete_char_at_cursor(),
@@ -585,15 +590,23 @@ impl App {
                 if self.pane().cursor_col > 0 {
                     self.pane_mut().cursor_col -= 1;
                 }
+                self.pane_mut().end_insert();
                 self.mode = Mode::Normal;
             }
             KeyCode::Char(c) => self.pane_mut().insert_char(c),
             KeyCode::Backspace => self.pane_mut().delete_char_before(),
             KeyCode::Enter => self.pane_mut().insert_newline(),
-            KeyCode::Left => self.pane_mut().move_left(),
-            KeyCode::Right => self.pane_mut().move_right(),
-            KeyCode::Up => self.pane_mut().move_up(1),
-            KeyCode::Down => self.pane_mut().move_down(1),
+            // Moving the cursor ends the insert session (a new undo step).
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                let pane = self.pane_mut();
+                pane.end_insert();
+                match key.code {
+                    KeyCode::Left => pane.move_left(),
+                    KeyCode::Right => pane.move_right(),
+                    KeyCode::Up => pane.move_up(1),
+                    _ => pane.move_down(1),
+                }
+            }
             _ => {}
         }
     }

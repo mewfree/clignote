@@ -16,6 +16,9 @@ pub(crate) fn scroll_into_view(offset: &mut usize, pos: usize, size: usize) {
     }
 }
 
+/// Buffer state saved for undo/redo: lines, cursor row, cursor col.
+type Snapshot = (Vec<String>, usize, usize);
+
 /// One editor pane: its own buffer, cursor, and viewport.
 pub struct Pane {
     pub lines: Vec<String>,
@@ -31,7 +34,11 @@ pub struct Pane {
     pub git_diff: Vec<LineStatus>,
     /// HEAD content fetched on open/save; used for real-time in-memory diff.
     head_lines: Option<Vec<String>>,
-    undo_stack: Vec<(Vec<String>, usize, usize)>,
+    undo_stack: Vec<Snapshot>,
+    redo_stack: Vec<Snapshot>,
+    /// True while an insert session has already recorded its undo snapshot,
+    /// so a run of typing undoes as one step.
+    insert_open: bool,
 }
 
 impl Pane {
@@ -65,6 +72,8 @@ impl Pane {
             git_diff: Vec::new(),
             head_lines: None,
             undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            insert_open: false,
         }
     }
 
@@ -185,21 +194,59 @@ impl Pane {
 
     // ── Undo ──────────────────────────────────────────────────────────────────
 
+    fn current_snapshot(&self) -> Snapshot {
+        (self.lines.clone(), self.cursor_row, self.cursor_col)
+    }
+
+    fn restore(&mut self, (lines, row, col): Snapshot) {
+        self.lines = lines;
+        self.cursor_row = row;
+        self.cursor_col = col;
+        self.modified = true;
+    }
+
+    /// Record the state before a discrete edit. Invalidates redo history.
     fn snapshot(&mut self) {
-        self.undo_stack
-            .push((self.lines.clone(), self.cursor_row, self.cursor_col));
+        let snap = self.current_snapshot();
+        self.undo_stack.push(snap);
+        self.redo_stack.clear();
+        self.insert_open = false;
+    }
+
+    /// Snapshot for an edit made while inserting: only the first edit of an
+    /// insert session records one, so typing a word is a single undo step.
+    fn snapshot_insert(&mut self) {
+        if !self.insert_open {
+            self.snapshot();
+            self.insert_open = true;
+        }
+    }
+
+    /// Close the current insert session; the next insert starts a new undo step.
+    pub fn end_insert(&mut self) {
+        self.insert_open = false;
     }
 
     pub fn undo(&mut self) -> bool {
-        if let Some((lines, row, col)) = self.undo_stack.pop() {
-            self.lines = lines;
-            self.cursor_row = row;
-            self.cursor_col = col;
-            self.modified = true;
-            true
-        } else {
-            false
-        }
+        self.end_insert();
+        let Some(prev) = self.undo_stack.pop() else {
+            return false;
+        };
+        let current = self.current_snapshot();
+        self.redo_stack.push(current);
+        self.restore(prev);
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        self.end_insert();
+        let Some(next) = self.redo_stack.pop() else {
+            return false;
+        };
+        let current = self.current_snapshot();
+        self.undo_stack.push(current);
+        self.restore(next);
+        true
     }
 
     // ── Editing ───────────────────────────────────────────────────────────────
@@ -311,7 +358,7 @@ impl Pane {
     }
 
     pub fn insert_char(&mut self, c: char) {
-        self.snapshot();
+        self.snapshot_insert();
         self.lines[self.cursor_row].insert(self.cursor_col, c);
         self.cursor_col += 1;
         self.modified = true;
@@ -356,7 +403,7 @@ impl Pane {
         if self.cursor_col == 0 && self.cursor_row == 0 {
             return;
         }
-        self.snapshot();
+        self.snapshot_insert();
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
             self.lines[self.cursor_row].remove(self.cursor_col);
@@ -371,7 +418,7 @@ impl Pane {
     }
 
     pub fn insert_newline(&mut self) {
-        self.snapshot();
+        self.snapshot_insert();
         let rest = self.lines[self.cursor_row].split_off(self.cursor_col);
         self.cursor_row += 1;
         self.lines.insert(self.cursor_row, rest);
@@ -381,6 +428,7 @@ impl Pane {
 
     pub fn open_line_below(&mut self) {
         self.snapshot();
+        self.insert_open = true;
         self.lines.insert(self.cursor_row + 1, String::new());
         self.cursor_row += 1;
         self.cursor_col = 0;
@@ -389,6 +437,7 @@ impl Pane {
 
     pub fn open_line_above(&mut self) {
         self.snapshot();
+        self.insert_open = true;
         self.lines.insert(self.cursor_row, String::new());
         self.cursor_col = 0;
         self.modified = true;
@@ -462,6 +511,54 @@ mod tests {
         let mut p = Pane::empty();
         p.lines = vec![s.to_string()];
         p
+    }
+
+    fn type_str(p: &mut Pane, s: &str) {
+        s.chars().for_each(|c| p.insert_char(c));
+    }
+
+    #[test]
+    fn typing_a_word_is_one_undo_step() {
+        let mut p = Pane::empty();
+        type_str(&mut p, "hello");
+        assert_eq!(p.lines[0], "hello");
+        assert!(p.undo());
+        assert_eq!(p.lines[0], "");
+        assert!(!p.undo());
+    }
+
+    #[test]
+    fn ending_insert_starts_new_undo_step() {
+        let mut p = Pane::empty();
+        type_str(&mut p, "ab");
+        p.end_insert();
+        type_str(&mut p, "cd");
+        p.undo();
+        assert_eq!(p.lines[0], "ab");
+    }
+
+    #[test]
+    fn open_line_and_typing_undo_together() {
+        let mut p = pane_with_line("x");
+        p.open_line_below();
+        type_str(&mut p, "new");
+        p.undo();
+        assert_eq!(p.lines, vec!["x"]);
+    }
+
+    #[test]
+    fn redo_restores_undone_change_and_new_edit_clears_it() {
+        let mut p = Pane::empty();
+        type_str(&mut p, "abc");
+        p.undo();
+        assert!(p.redo());
+        assert_eq!(p.lines[0], "abc");
+        assert!(!p.redo());
+
+        p.undo();
+        p.end_insert();
+        type_str(&mut p, "z");
+        assert!(!p.redo());
     }
 
     #[test]
