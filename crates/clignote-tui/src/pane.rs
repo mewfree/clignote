@@ -5,6 +5,7 @@ use crate::fold::{self, Folds};
 use crate::git::{self, LineStatus};
 use crate::links;
 use crate::structure::{self, StructureOp};
+use crate::wrap::{self, WrapState};
 
 /// Shift `offset` the minimum amount needed so `pos` lies in
 /// `offset..offset + size`. No-op when `size` is zero.
@@ -43,6 +44,8 @@ pub struct Pane {
     /// so a run of typing undoes as one step.
     insert_open: bool,
     folds: Folds,
+    /// Wrap geometry from the last render; `None` when not wrapping.
+    wrap: Option<WrapState>,
 }
 
 impl Pane {
@@ -79,6 +82,7 @@ impl Pane {
             redo_stack: Vec::new(),
             insert_open: false,
             folds: Folds::default(),
+            wrap: None,
         }
     }
 
@@ -117,32 +121,127 @@ impl Pane {
         ranges.binary_search_by_key(&(row + 1), |r| r.start).is_ok()
     }
 
-    /// Buffer rows shown on screen, top to bottom, skipping folded rows.
-    /// Shorter than `height` when the buffer ends first.
-    pub fn visible_rows(&self, ranges: &[Range<usize>], height: usize) -> Vec<usize> {
-        let mut rows = Vec::with_capacity(height);
+    // ── Soft wrap & screen layout ─────────────────────────────────────────────
+
+    /// Set by the renderer each frame: `Some` when long lines wrap.
+    pub fn set_wrap(&mut self, state: Option<WrapState>) {
+        self.wrap = state;
+    }
+
+    pub fn is_wrapping(&self) -> bool {
+        self.wrap.is_some()
+    }
+
+    /// Display-cell ranges of the screen rows that buffer row `row` occupies.
+    /// A single range when not wrapping.
+    pub fn row_segments(&self, row: usize) -> Vec<Range<usize>> {
+        let Some(w) = self.wrap else {
+            return wrap::whole(self.lines[row].len().max(1));
+        };
+        // In Insert mode the cursor row shows raw links and the cursor may sit
+        // one cell past the end of the text.
+        let cursor_cell = w.insert && row == self.cursor_row;
+        let mut chars = wrap::display_chars(&self.lines[row], w.conceal_links && !cursor_cell);
+        let cells = if cursor_cell {
+            chars.len() + 1
+        } else {
+            chars.len().max(1)
+        };
+        chars.resize(cells, ' ');
+        wrap::segments(&chars, w.width)
+    }
+
+    fn row_height(&self, row: usize) -> usize {
+        if self.wrap.is_some() {
+            self.row_segments(row).len()
+        } else {
+            1
+        }
+    }
+
+    /// Index of the screen row of the cursor's buffer row that holds the cursor.
+    fn cursor_segment(&self, segs: &[Range<usize>]) -> usize {
+        segs.iter()
+            .position(|r| self.cursor_col < r.end)
+            .unwrap_or(segs.len() - 1)
+    }
+
+    /// Screen rows taken by the visible buffer rows in `top..row`.
+    fn screen_rows_between(&self, ranges: &[Range<usize>], top: usize, row: usize) -> usize {
+        let mut total = 0;
+        let mut r = top;
+        while r < row {
+            total += self.row_height(r);
+            match fold::next_visible(ranges, self.lines.len(), r) {
+                Some(next) => r = next,
+                None => break,
+            }
+        }
+        total
+    }
+
+    /// What is on screen, top to bottom, as `(buffer row, wrapped segment)`
+    /// pairs, skipping folded rows. Shorter than `height` when the buffer ends.
+    pub fn screen_layout(&self, ranges: &[Range<usize>], height: usize) -> Vec<(usize, usize)> {
+        let mut out = Vec::with_capacity(height);
         let mut row = self.viewport_top;
-        while rows.len() < height && row < self.lines.len() {
-            rows.push(row);
+        while out.len() < height && row < self.lines.len() {
+            let room = height - out.len();
+            out.extend((0..self.row_height(row)).take(room).map(|seg| (row, seg)));
             match fold::next_visible(ranges, self.lines.len(), row) {
                 Some(next) => row = next,
                 None => break,
             }
         }
-        rows
+        out
     }
 
-    /// Buffer row displayed `offset` visible rows below the viewport top.
-    pub fn row_at_screen_offset(&self, offset: usize) -> usize {
+    /// Buffer position under the content-area cell `(x, y)`, clamped to the text.
+    pub fn pos_at_screen(&self, x: usize, y: usize) -> (usize, usize) {
         let ranges = self.fold_ranges();
-        let mut row = self.viewport_top.min(self.lines.len().saturating_sub(1));
-        for _ in 0..offset {
-            match fold::next_visible(&ranges, self.lines.len(), row) {
-                Some(next) => row = next,
-                None => break,
-            }
-        }
-        row
+        let layout = self.screen_layout(&ranges, y + 1);
+        let last_row = self.lines.len().saturating_sub(1);
+        let &(row, seg) = layout.get(y).or(layout.last()).unwrap_or(&(last_row, 0));
+        let start = if self.wrap.is_some() {
+            self.row_segments(row).get(seg).map_or(0, |r| r.start)
+        } else {
+            self.viewport_left
+        };
+        let col = (start + x).min(self.lines[row].len().saturating_sub(1));
+        (row, col)
+    }
+
+    /// Move the cursor one screen row up or down, wrapping-aware. Returns
+    /// false at the top/bottom of the buffer.
+    fn visual_step(&mut self, down: bool, ranges: &[Range<usize>]) -> bool {
+        let segs = self.row_segments(self.cursor_row);
+        let seg = self.cursor_segment(&segs);
+        let offset = self.cursor_col.saturating_sub(segs[seg].start);
+
+        let (row, target) = if down && seg + 1 < segs.len() {
+            (self.cursor_row, segs[seg + 1].clone())
+        } else if !down && seg > 0 {
+            (self.cursor_row, segs[seg - 1].clone())
+        } else {
+            let other = if down {
+                fold::next_visible(ranges, self.lines.len(), self.cursor_row)
+            } else {
+                fold::prev_visible(ranges, self.cursor_row)
+            };
+            let Some(row) = other else {
+                return false;
+            };
+            let mut segs = self.row_segments(row);
+            let target = if down {
+                segs.swap_remove(0)
+            } else {
+                segs.pop().unwrap_or(0..0)
+            };
+            (row, target)
+        };
+        self.cursor_row = row;
+        self.cursor_col = (target.start + offset).min(target.end.saturating_sub(1));
+        true
     }
 
     /// Keep the cursor inside the visible viewport (vertical and horizontal).
@@ -156,16 +255,39 @@ impl Pane {
             if self.cursor_row < self.viewport_top {
                 self.viewport_top = self.cursor_row;
             } else {
-                let on_screen = fold::visible_between(&ranges, self.viewport_top, self.cursor_row);
-                for _ in 0..(on_screen + 1).saturating_sub(height) {
+                // Every buffer row takes at least one screen row, so at least
+                // this many rows must scroll off the top.
+                let rows_above = fold::visible_between(&ranges, self.viewport_top, self.cursor_row);
+                for _ in 0..(rows_above + 1).saturating_sub(height) {
                     match fold::next_visible(&ranges, self.lines.len(), self.viewport_top) {
                         Some(next) => self.viewport_top = next,
                         None => break,
                     }
                 }
+                if self.wrap.is_some() {
+                    // Wrapped rows are taller: scroll until the cursor's own
+                    // screen row fits.
+                    let segs = self.row_segments(self.cursor_row);
+                    let in_row = self.cursor_segment(&segs);
+                    while self.viewport_top < self.cursor_row
+                        && self.screen_rows_between(&ranges, self.viewport_top, self.cursor_row)
+                            + in_row
+                            + 1
+                            > height
+                    {
+                        match fold::next_visible(&ranges, self.lines.len(), self.viewport_top) {
+                            Some(next) => self.viewport_top = next,
+                            None => break,
+                        }
+                    }
+                }
             }
         }
-        scroll_into_view(&mut self.viewport_left, self.cursor_col, width);
+        if self.wrap.is_some() {
+            self.viewport_left = 0;
+        } else {
+            scroll_into_view(&mut self.viewport_left, self.cursor_col, width);
+        }
     }
 
     pub fn scroll_down(&mut self, n: usize) {
@@ -256,6 +378,15 @@ impl Pane {
     /// Move up `n` visible rows (folded regions count as their heading).
     pub fn move_up(&mut self, n: usize) {
         let ranges = self.fold_ranges();
+        if self.wrap.is_some() {
+            for _ in 0..n {
+                if !self.visual_step(false, &ranges) {
+                    break;
+                }
+            }
+            self.clamp_col();
+            return;
+        }
         for _ in 0..n {
             match fold::prev_visible(&ranges, self.cursor_row) {
                 Some(prev) => self.cursor_row = prev,
@@ -268,6 +399,15 @@ impl Pane {
     /// Move down `n` visible rows (folded regions count as their heading).
     pub fn move_down(&mut self, n: usize) {
         let ranges = self.fold_ranges();
+        if self.wrap.is_some() {
+            for _ in 0..n {
+                if !self.visual_step(true, &ranges) {
+                    break;
+                }
+            }
+            self.clamp_col();
+            return;
+        }
         for _ in 0..n {
             match fold::next_visible(&ranges, self.lines.len(), self.cursor_row) {
                 Some(next) => self.cursor_row = next,
@@ -776,12 +916,17 @@ mod tests {
     }
 
     #[test]
-    fn visible_rows_skip_folds_and_screen_offset_matches() {
+    fn screen_layout_skips_folds_and_click_maps_to_visible_row() {
         let mut p = pane_with_doc(DOC);
         p.cycle_fold();
         let ranges = p.fold_ranges();
-        assert_eq!(p.visible_rows(&ranges, 10), vec![0, 4, 5]);
-        assert_eq!(p.row_at_screen_offset(1), 4);
+        let rows: Vec<usize> = p
+            .screen_layout(&ranges, 10)
+            .into_iter()
+            .map(|(row, _)| row)
+            .collect();
+        assert_eq!(rows, vec![0, 4, 5]);
+        assert_eq!(p.pos_at_screen(0, 1), (4, 0));
     }
 
     #[test]
@@ -911,6 +1056,79 @@ mod tests {
         p.open_line_below();
         assert_eq!(p.lines[1], "  - ");
         assert_eq!(p.cursor_col, 4);
+    }
+
+    fn wrapped(s: &str, width: usize) -> Pane {
+        let mut p = pane_with_doc(s);
+        p.set_wrap(Some(WrapState {
+            width,
+            conceal_links: true,
+            insert: false,
+        }));
+        p
+    }
+
+    // "aaaa bbbb cccc" wraps at width 10 into "aaaa bbbb " / "cccc".
+    const LONG: &str = "aaaa bbbb cccc";
+
+    #[test]
+    fn wrapped_row_takes_several_screen_rows() {
+        let p = wrapped(&format!("{LONG}\nshort"), 10);
+        assert_eq!(p.row_segments(0), vec![0..10, 10..14]);
+        assert_eq!(p.screen_layout(&[], 10), vec![(0, 0), (0, 1), (1, 0)]);
+    }
+
+    #[test]
+    fn j_and_k_move_by_screen_row_keeping_column_offset() {
+        let mut p = wrapped(&format!("{LONG}\nshort"), 10);
+        p.cursor_col = 2;
+        p.move_down(1);
+        assert_eq!((p.cursor_row, p.cursor_col), (0, 12)); // 2nd segment
+        p.move_down(1);
+        assert_eq!((p.cursor_row, p.cursor_col), (1, 2)); // next buffer row
+        p.move_up(1);
+        assert_eq!((p.cursor_row, p.cursor_col), (0, 12));
+        p.move_up(1);
+        assert_eq!((p.cursor_row, p.cursor_col), (0, 2));
+    }
+
+    #[test]
+    fn unwrapped_j_still_moves_by_buffer_row() {
+        let mut p = pane_with_doc(&format!("{LONG}\nshort"));
+        p.move_down(1);
+        assert_eq!(p.cursor_row, 1);
+    }
+
+    #[test]
+    fn scrolling_accounts_for_wrapped_heights() {
+        // Three 2-row lines in a 4-row window: cursor on the 3rd forces a scroll.
+        let mut p = wrapped(&format!("{LONG}\n{LONG}\n{LONG}"), 10);
+        p.cursor_row = 2;
+        p.scroll_to_cursor(4, 10);
+        assert_eq!(p.viewport_top, 1);
+        p.cursor_row = 0;
+        p.scroll_to_cursor(4, 10);
+        assert_eq!(p.viewport_top, 0);
+    }
+
+    #[test]
+    fn click_maps_screen_row_to_wrapped_segment() {
+        let p = wrapped(&format!("{LONG}\nshort"), 10);
+        assert_eq!(p.pos_at_screen(3, 0), (0, 3));
+        assert_eq!(p.pos_at_screen(2, 1), (0, 12)); // continuation row
+        assert_eq!(p.pos_at_screen(1, 2), (1, 1));
+    }
+
+    #[test]
+    fn insert_cursor_cell_can_add_a_screen_row() {
+        let mut p = wrapped("0123456789", 10); // exactly one full row
+        assert_eq!(p.row_segments(0).len(), 1);
+        p.set_wrap(Some(WrapState {
+            width: 10,
+            conceal_links: true,
+            insert: true,
+        }));
+        assert_eq!(p.row_segments(0).len(), 2); // cursor cell wraps
     }
 
     fn type_str(p: &mut Pane, s: &str) {

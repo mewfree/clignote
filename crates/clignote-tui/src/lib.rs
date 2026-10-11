@@ -6,6 +6,7 @@ mod links;
 pub mod pane;
 pub mod structure;
 pub mod ui;
+pub mod wrap;
 
 pub use app::App;
 

@@ -10,6 +10,7 @@ use crate::app::{App, Mode, PaneLayout, SplitDir};
 use crate::git::LineStatus;
 use crate::links;
 use crate::pane::{scroll_into_view, Pane};
+use crate::wrap::{self, WrapState};
 
 type VisualSel = (usize, usize, usize, usize, bool);
 
@@ -18,6 +19,8 @@ struct PaneRenderCtx {
     visual_sel: Option<VisualSel>,
     mode: Mode,
     conceal_links: bool,
+    /// Soft-wrap long lines instead of scrolling horizontally.
+    wrap: bool,
 }
 
 struct SearchView<'a> {
@@ -90,6 +93,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             visual_sel: visual_sel.filter(|_| is_active),
             mode: if is_active { app.mode } else { Mode::Normal },
             conceal_links: app.conceal_links,
+            wrap: app.wrap,
         };
         render_pane(
             frame,
@@ -294,72 +298,83 @@ fn render_pane(
     };
 
     let width = content_area.width as usize;
+    let insert_here = is_active && matches!(pane_ctx.mode, Mode::Insert);
+    pane.set_wrap((pane_ctx.wrap && width > 0).then_some(WrapState {
+        width,
+        conceal_links: pane_ctx.conceal_links,
+        insert: insert_here,
+    }));
     pane.scroll_to_cursor(height, width);
     pane.recompute_git_diff();
 
-    // Buffer rows on screen, skipping folded regions.
+    // Screen rows as (buffer row, wrapped segment), skipping folded regions.
     let fold_ranges = pane.fold_ranges();
-    let rows = pane.visible_rows(&fold_ranges, height);
+    let layout = pane.screen_layout(&fold_ranges, height);
+    let wrapping = pane.is_wrapping();
 
-    // Render git gutter
-    let gutter_lines: Vec<Line> = rows
-        .iter()
-        .map(|&row| {
-            let status = pane.git_diff.get(row).copied().unwrap_or_default();
+    let mut gutter_lines: Vec<Line> = Vec::with_capacity(layout.len());
+    let mut visible: Vec<Line> = Vec::with_capacity(layout.len());
+    let mut i = 0;
+    while i < layout.len() {
+        let row = layout[i].0;
+        let run_len = layout[i..].iter().take_while(|&&(r, _)| r == row).count();
+
+        // Matches are sorted by (row, col): binary-search this row's run.
+        let lo = search.matches.partition_point(|&(r, _)| r < row);
+        let hi = lo + search.matches[lo..].partition_point(|&(r, _)| r == row);
+        let row_search: Vec<(usize, usize, bool)> = if search.query_len > 0 {
+            (lo..hi)
+                .map(|mi| {
+                    let col = search.matches[mi].1;
+                    (col, search.query_len, search.current_idx == Some(mi))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let ctx = LineCtx {
+            cursor_row: pane.cursor_row,
+            cursor_col: pane.cursor_col,
+            visual_sel: pane_ctx.visual_sel,
+            mode: pane_ctx.mode,
+            is_active,
+            search_spans: &row_search,
+            // Reveal raw link syntax only while actively editing that line in
+            // Insert mode; Normal-mode navigation never pops links open.
+            conceal_links: pane_ctx.conceal_links && !(insert_here && row == pane.cursor_row),
+        };
+        let cells = build_cells(&pane.lines[row], row, &ctx);
+        let segs = if wrapping {
+            pane.row_segments(row)
+        } else {
+            wrap::whole(cells.len())
+        };
+
+        let status = pane.git_diff.get(row).copied().unwrap_or_default();
+        for &(_, seg) in &layout[i..i + run_len] {
+            let range = segs.get(seg).cloned().unwrap_or(0..0);
+            let (start, end) = (range.start.min(cells.len()), range.end.min(cells.len()));
+            let mut line = Line::from(spans_from(&cells[start..end]));
+            if seg + 1 == segs.len() && Pane::is_fold_start(&fold_ranges, row) {
+                line.spans
+                    .push(Span::styled(" […]", Style::default().fg(Color::DarkGray)));
+            }
+            visible.push(line);
+
+            // Git mark on the first screen row of a buffer row only.
             let (ch, style) = match status {
+                _ if seg > 0 => (" ", Style::default()),
                 LineStatus::Added => ("+", Style::default().fg(Color::Green)),
                 LineStatus::Modified => ("~", Style::default().fg(Color::Yellow)),
                 LineStatus::Unchanged => (" ", Style::default()),
             };
-            Line::from(Span::styled(ch, style))
-        })
-        .collect();
+            gutter_lines.push(Line::from(Span::styled(ch, style)));
+        }
+        i += run_len;
+    }
+
     frame.render_widget(Paragraph::new(gutter_lines), gutter_area);
-
-    // Render content (full lines; horizontal scroll applied via Paragraph)
-    let visible: Vec<Line> = rows
-        .iter()
-        .map(|&row| match pane.lines.get(row) {
-            None => Line::default(),
-            Some(line) => {
-                // Matches are sorted by (row, col): binary-search this row's run.
-                let lo = search.matches.partition_point(|&(r, _)| r < row);
-                let hi = lo + search.matches[lo..].partition_point(|&(r, _)| r == row);
-                let row_search: Vec<(usize, usize, bool)> = if search.query_len > 0 {
-                    (lo..hi)
-                        .map(|mi| {
-                            let col = search.matches[mi].1;
-                            (col, search.query_len, search.current_idx == Some(mi))
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let ctx = LineCtx {
-                    cursor_row: pane.cursor_row,
-                    cursor_col: pane.cursor_col,
-                    visual_sel: pane_ctx.visual_sel,
-                    mode: pane_ctx.mode,
-                    is_active,
-                    search_spans: &row_search,
-                    // Reveal raw link syntax only while actively editing that line in
-                    // Insert mode; Normal-mode navigation never pops links open.
-                    conceal_links: pane_ctx.conceal_links
-                        && !(is_active
-                            && row == pane.cursor_row
-                            && matches!(pane_ctx.mode, Mode::Insert)),
-                };
-                let mut rendered = build_line(line, row, &ctx);
-                if Pane::is_fold_start(&fold_ranges, row) {
-                    rendered
-                        .spans
-                        .push(Span::styled(" […]", Style::default().fg(Color::DarkGray)));
-                }
-                rendered
-            }
-        })
-        .collect();
-
+    // Full lines; horizontal scroll applies only when not wrapping.
     frame.render_widget(
         Paragraph::new(visible).scroll((0, pane.viewport_left as u16)),
         content_area,
@@ -367,9 +382,19 @@ fn render_pane(
 
     // Terminal cursor position (for blinking cursor in Insert)
     if is_active {
-        if let Some(offset) = rows.iter().position(|&r| r == pane.cursor_row) {
+        let (seg, seg_start) = if wrapping {
+            let segs = pane.row_segments(pane.cursor_row);
+            let seg = segs
+                .iter()
+                .position(|r| pane.cursor_col < r.end)
+                .unwrap_or(segs.len() - 1);
+            (seg, segs[seg].start)
+        } else {
+            (0, pane.viewport_left)
+        };
+        if let Some(offset) = layout.iter().position(|&e| e == (pane.cursor_row, seg)) {
             let screen_row = content_area.y + offset as u16;
-            let screen_col = content_area.x + (pane.cursor_col - pane.viewport_left) as u16;
+            let screen_col = content_area.x + pane.cursor_col.saturating_sub(seg_start) as u16;
             frame.set_cursor_position((screen_col, screen_row));
         }
     }
@@ -377,7 +402,30 @@ fn render_pane(
 
 // ── Line rendering ────────────────────────────────────────────────────────────
 
-fn build_line(line: &str, row: usize, ctx: &LineCtx<'_>) -> Line<'static> {
+/// Group per-cell styles into spans.
+fn spans_from(cells: &[(char, Style)]) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut buf = String::new();
+    let mut cur_style = Style::default();
+    for &(ch, style) in cells {
+        if style != cur_style {
+            if !buf.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut buf), cur_style));
+            }
+            cur_style = style;
+        }
+        buf.push(ch);
+    }
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, cur_style));
+    }
+    spans
+}
+
+/// The styled display cells of one buffer line (links concealed per `ctx`),
+/// with selection, search and cursor overlays applied. Always at least one
+/// cell, so empty lines can show the cursor.
+fn build_cells(line: &str, row: usize, ctx: &LineCtx<'_>) -> Vec<(char, Style)> {
     let (chars, base) = if ctx.conceal_links {
         conceal_links(line)
     } else {
@@ -387,10 +435,7 @@ fn build_line(line: &str, row: usize, ctx: &LineCtx<'_>) -> Line<'static> {
     };
     let effective_n = chars.len().max(1); // show at least a cursor cell on empty lines
 
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut buf = String::new();
-    let mut cur_style = Style::default();
-
+    let mut cells = Vec::with_capacity(effective_n);
     for i in 0..effective_n {
         let ch = chars.get(i).copied().unwrap_or(' ');
         let mut style = base.get(i).copied().unwrap_or_default();
@@ -426,19 +471,9 @@ fn build_line(line: &str, row: usize, ctx: &LineCtx<'_>) -> Line<'static> {
             style = Style::default().bg(Color::White).fg(Color::Black);
         }
 
-        if style != cur_style {
-            if !buf.is_empty() {
-                spans.push(Span::styled(std::mem::take(&mut buf), cur_style));
-            }
-            cur_style = style;
-        }
-        buf.push(ch);
+        cells.push((ch, style));
     }
-    if !buf.is_empty() {
-        spans.push(Span::styled(buf, cur_style));
-    }
-
-    Line::from(spans)
+    cells
 }
 
 fn in_selection(
@@ -555,18 +590,9 @@ fn conceal_links(line: &str) -> (Vec<char>, Vec<Style>) {
     let chars: Vec<char> = line.chars().collect();
     let styles = org_styles(&chars);
 
-    let found = links::find_links(&chars, '[', ']');
-    if found.is_empty() {
+    let Some(keep) = wrap::conceal_mask(&chars) else {
         return (chars, styles);
-    }
-
-    // Drop everything around the visible text: brackets, "][" and the URL.
-    let mut keep = vec![true; chars.len()];
-    for link in &found {
-        let text = link.desc.clone().unwrap_or_else(|| link.url.clone());
-        keep[link.start..text.start].fill(false);
-        keep[text.end..=link.end].fill(false);
-    }
+    };
 
     chars
         .into_iter()
@@ -840,6 +866,68 @@ mod tests {
     fn conceal_links_keeps_styles_aligned_with_chars() {
         let (chars, styles) = conceal_links("a [[u][d]] b [[x]]");
         assert_eq!(chars.len(), styles.len());
+    }
+
+    /// Render `app` into a `width`×`height` test terminal; one string per row,
+    /// without the git gutter column.
+    fn draw(app: &mut App, width: u16, height: u16) -> (Vec<String>, Option<(u16, u16)>) {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render(f, app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let rows = (0..height)
+            .map(|y| {
+                (1..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        let cursor = terminal.get_cursor_position().ok().map(|p| (p.x, p.y));
+        (rows, cursor)
+    }
+
+    fn app_with(text: &str) -> App {
+        let mut app = App::new(None).unwrap();
+        app.pane_mut().lines = text.lines().map(str::to_owned).collect();
+        app
+    }
+
+    #[test]
+    fn long_lines_wrap_at_word_boundaries() {
+        let mut app = app_with("aaaa bbbb cccc dddd\nnext");
+        // 11 columns = 1 gutter + 10 content.
+        let (rows, _) = draw(&mut app, 11, 6);
+        assert_eq!(rows[0].trim_end(), "aaaa bbbb");
+        assert_eq!(rows[1].trim_end(), "cccc dddd");
+        assert_eq!(rows[2].trim_end(), "next");
+    }
+
+    #[test]
+    fn wrap_off_scrolls_horizontally_instead() {
+        let mut app = app_with("aaaa bbbb cccc dddd\nnext");
+        app.wrap = false;
+        let (rows, _) = draw(&mut app, 11, 6);
+        assert_eq!(rows[0].trim_end(), "aaaa bbbb");
+        assert_eq!(rows[1].trim_end(), "next");
+    }
+
+    #[test]
+    fn folded_heading_hides_body_and_shows_marker() {
+        let mut app = app_with("* A\nbody\n* B");
+        app.pane_mut().cycle_fold();
+        let (rows, _) = draw(&mut app, 20, 6);
+        assert!(rows[0].contains("* A […]"), "{:?}", rows[0]);
+        assert_eq!(rows[1].trim_end(), "* B");
+    }
+
+    #[test]
+    fn cursor_lands_on_wrapped_continuation_row() {
+        let mut app = app_with("aaaa bbbb cccc dddd");
+        app.mode = Mode::Insert;
+        app.pane_mut().cursor_col = 12;
+        let (_, cursor) = draw(&mut app, 11, 6);
+        // col 12 is the 3rd char of the second segment ("cccc dddd" starts at 10).
+        assert_eq!(cursor, Some((3, 1)));
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub enum Action {
     SaveFile,
     QuitAll,
     ToggleLinkConceal,
+    ToggleWrap,
     BufferList,
     NextBuffer,
     PrevBuffer,
@@ -75,6 +76,7 @@ fn exact_match(s: &str) -> Option<Action> {
         "SPC w l" => Some(Action::FocusPane(PaneDir::Right)),
         "SPC q q" => Some(Action::QuitAll),
         "SPC t l" => Some(Action::ToggleLinkConceal),
+        "SPC t w" => Some(Action::ToggleWrap),
         // Doom/Spacemacs SPC b buffer commands
         "SPC b b" => Some(Action::BufferList),
         "SPC b n" => Some(Action::NextBuffer),
@@ -121,7 +123,7 @@ pub fn hint_for_prefix(prefix: &str) -> &'static str {
         "SPC w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
         "SPC b" => "b: list  n: next  p: prev  d/k: kill",
         "SPC q" => "q: quit",
-        "SPC t" => "l: toggle link display (label/target)",
+        "SPC t" => "l: toggle link display (label/target)  w: toggle soft wrap",
         _ => "",
     }
 }

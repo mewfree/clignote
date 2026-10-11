@@ -251,6 +251,11 @@ pub struct App {
     /// Toggle with `SPC t l`.
     pub conceal_links: bool,
 
+    /// When true (default), long lines wrap at word boundaries and `j`/`k`
+    /// move by screen row; when false they scroll horizontally.
+    /// Toggle with `SPC t w`.
+    pub wrap: bool,
+
     // Directory browser state (Mode::Browse)
     pub browse_dir: PathBuf,
     pub browse_entries: Vec<BrowseEntry>,
@@ -318,6 +323,7 @@ impl App {
             search_match_idx: 0,
             search_origin: (0, 0),
             conceal_links: true,
+            wrap: true,
             browse_dir: PathBuf::new(),
             browse_entries: Vec::new(),
             browse_selected: 0,
@@ -387,9 +393,8 @@ impl App {
         } else {
             rect.x as usize
         };
-        let buf_row = pane.row_at_screen_offset(row - rect.y as usize);
-        let buf_col = (pane.viewport_left + col.saturating_sub(content_x))
-            .min(pane.lines[buf_row].len().saturating_sub(1));
+        let (buf_row, buf_col) =
+            pane.pos_at_screen(col.saturating_sub(content_x), row - rect.y as usize);
         pane.cursor_row = buf_row;
         pane.cursor_col = buf_col;
         // Leave visual mode on click
@@ -597,6 +602,14 @@ impl App {
             Action::NextPane => self.cycle_pane(),
             Action::FocusPane(dir) => self.focus_pane(dir),
             Action::SaveFile => self.save_active(),
+            Action::ToggleWrap => {
+                self.wrap = !self.wrap;
+                self.message = Some(if self.wrap {
+                    "Soft wrap: on".into()
+                } else {
+                    "Soft wrap: off".into()
+                });
+            }
             Action::ToggleLinkConceal => {
                 self.conceal_links = !self.conceal_links;
                 self.message = Some(if self.conceal_links {
