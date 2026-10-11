@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 // ── Action ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneDir {
     Left,
     Right,
@@ -10,13 +10,11 @@ pub enum PaneDir {
     Down,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     GoToFileStart,
-    GoToFileEnd,
     DeleteLine,
     DeleteWord,
-    DeleteChar,
     YankLine,
     SplitHorizontal,
     SplitVertical,
@@ -34,7 +32,7 @@ pub enum Action {
 
 // ── Sequence matching ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchResult {
     Action(Action),
     /// Current sequence is a known prefix — wait for more keys.
@@ -121,7 +119,7 @@ pub fn key_to_str(k: &KeyEvent) -> String {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     match k.code {
         KeyCode::Char(' ') if !ctrl => "SPC".into(),
-        KeyCode::Char(c) if ctrl => format!("C-{}", c),
+        KeyCode::Char(c) if ctrl => format!("C-{c}"),
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Esc => "Esc".into(),
         KeyCode::Enter => "RET".into(),
@@ -131,7 +129,7 @@ pub fn key_to_str(k: &KeyEvent) -> String {
         KeyCode::Right => "Right".into(),
         KeyCode::Up => "Up".into(),
         KeyCode::Down => "Down".into(),
-        other => format!("{:?}", other),
+        other => format!("{other:?}"),
     }
 }
 

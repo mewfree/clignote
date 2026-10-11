@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf as StdPathBuf};
+use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 
 use crate::keymap::{self, Action, MatchResult, PaneDir};
 use crate::pane::Pane;
@@ -18,54 +18,42 @@ struct CompletionState {
 /// List filesystem entries whose names start with `partial`'s basename,
 /// searching in `partial`'s directory (or `.` if there is none).
 fn path_completions(partial: &str) -> Vec<String> {
-    let (search_dir, name_prefix): (StdPathBuf, String) = if partial.ends_with('/') {
-        (StdPathBuf::from(partial), String::new())
+    let (search_dir, name_prefix): (PathBuf, &str) = if partial.ends_with('/') {
+        (PathBuf::from(partial), "")
     } else {
         let p = Path::new(partial);
         let dir = match p.parent() {
             Some(d) if d != Path::new("") => d.to_path_buf(),
-            _ => StdPathBuf::from("."),
+            _ => PathBuf::from("."),
         };
-        let prefix = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-        (dir, prefix)
+        (dir, p.file_name().and_then(|n| n.to_str()).unwrap_or(""))
     };
+    let bare_cwd = search_dir == Path::new(".") && !partial.starts_with("./");
+    // Avoid a doubled slash when `partial` already ended in one.
+    let dir_prefix = search_dir.to_string_lossy();
+    let dir_prefix = dir_prefix.trim_end_matches('/');
 
     let mut results: Vec<String> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&search_dir) {
         for entry in entries.flatten() {
-            let name = match entry.file_name().into_string() {
-                Ok(n) => n,
-                Err(_) => continue,
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
             };
             // Skip hidden entries unless the user is explicitly typing a dot
             if name.starts_with('.') && !name_prefix.starts_with('.') {
                 continue;
             }
-            if !name.starts_with(&name_prefix) {
+            if !name.starts_with(name_prefix) {
                 continue;
             }
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+            let slash = if is_dir { "/" } else { "" };
             // Reconstruct the full path string to return
-            let completed = if search_dir == std::path::Path::new(".") && !partial.starts_with("./")
-            {
-                if is_dir {
-                    format!("{}/", name)
-                } else {
-                    name
-                }
+            results.push(if bare_cwd {
+                format!("{name}{slash}")
             } else {
-                let dir_s = search_dir.to_string_lossy();
-                if is_dir {
-                    format!("{}/{}/", dir_s, name)
-                } else {
-                    format!("{}/{}", dir_s, name)
-                }
-            };
-            results.push(completed);
+                format!("{dir_prefix}/{name}{slash}")
+            });
         }
     }
     // Directories first, then alphabetically within each group
@@ -79,9 +67,7 @@ fn split_file_command(cmd: &str) -> Option<(String, String)> {
     for verb in &["edit!", "edit", "e!", "e", "w"] {
         if let Some(rest) = cmd.strip_prefix(verb) {
             if rest.is_empty() || rest.starts_with(' ') {
-                let cmd_prefix = format!("{} ", verb);
-                let partial = rest.trim().to_string();
-                return Some((cmd_prefix, partial));
+                return Some((format!("{verb} "), rest.trim().to_string()));
             }
         }
     }
@@ -90,7 +76,7 @@ fn split_file_command(cmd: &str) -> Option<(String, String)> {
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
     Insert,
@@ -107,7 +93,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub fn label(&self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
@@ -265,14 +251,14 @@ pub struct App {
     pub conceal_links: bool,
 
     // Directory browser state (Mode::Browse)
-    pub browse_dir: StdPathBuf,
+    pub browse_dir: PathBuf,
     pub browse_entries: Vec<BrowseEntry>,
     pub browse_selected: usize,
     /// First visible entry index (vertical scroll), kept in sync by the renderer.
     pub browse_scroll: usize,
 
     /// Most-recently-used list of file paths opened this session (front = most recent).
-    pub buffers: Vec<StdPathBuf>,
+    pub buffers: Vec<PathBuf>,
     /// Selection state for Mode::BufferList.
     pub buf_list_selected: usize,
     pub buf_list_scroll: usize,
@@ -294,10 +280,15 @@ fn open_url(url: &str) {
     let _ = std::process::Command::new(opener).arg(url).spawn();
 }
 
+/// Move a list selection down by `n`, clamped to the last of `len` entries.
+fn select_down(selected: &mut usize, len: usize, n: usize) {
+    *selected = (*selected + n).min(len.saturating_sub(1));
+}
+
 impl App {
     pub fn new(file_path: Option<&str>) -> anyhow::Result<Self> {
         let browse_target = match file_path {
-            Some(p) if Path::new(p).is_dir() => Some(StdPathBuf::from(p)),
+            Some(p) if Path::new(p).is_dir() => Some(PathBuf::from(p)),
             _ => None,
         };
         let pane = match file_path {
@@ -326,7 +317,7 @@ impl App {
             search_match_idx: 0,
             search_origin: (0, 0),
             conceal_links: true,
-            browse_dir: StdPathBuf::new(),
+            browse_dir: PathBuf::new(),
             browse_entries: Vec::new(),
             browse_selected: 0,
             browse_scroll: 0,
@@ -354,12 +345,12 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.message = None;
-        match &self.mode.clone() {
+        match self.mode {
             Mode::Normal => self.handle_normal(key),
             Mode::Insert => self.handle_insert(key),
             Mode::Command => self.handle_command(key),
             Mode::Search => self.handle_search(key),
-            Mode::Visual { line_wise } => self.handle_visual(key, *line_wise),
+            Mode::Visual { line_wise } => self.handle_visual(key, line_wise),
             Mode::Browse => self.handle_browse(key),
             Mode::BufferList => self.handle_buffer_list(key),
         }
@@ -370,48 +361,40 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.click_at(event.column as usize, event.row as usize);
             }
-            MouseEventKind::ScrollDown => {
-                let pane = &mut self.panes[self.active_pane];
-                pane.scroll_down(3);
-            }
-            MouseEventKind::ScrollUp => {
-                let pane = &mut self.panes[self.active_pane];
-                pane.scroll_up(3);
-            }
+            MouseEventKind::ScrollDown => self.pane_mut().scroll_down(3),
+            MouseEventKind::ScrollUp => self.pane_mut().scroll_up(3),
             _ => {}
         }
     }
 
     fn click_at(&mut self, col: usize, row: usize) {
         // Find which pane the click landed in
-        for (i, rect) in self.pane_rects.iter().enumerate() {
-            if col >= rect.x as usize
-                && col < (rect.x + rect.width) as usize
-                && row >= rect.y as usize
-                && row < (rect.y + rect.height) as usize
-            {
-                self.active_pane = i;
-                let pane = &mut self.panes[i];
-                // Content starts after the 1-col git gutter (when there is room).
-                const GUTTER: usize = 1;
-                let content_x = if rect.width as usize > GUTTER {
-                    rect.x as usize + GUTTER
-                } else {
-                    rect.x as usize
-                };
-                let buf_row = (pane.viewport_top + row - rect.y as usize)
-                    .min(pane.lines.len().saturating_sub(1));
-                let buf_col = (pane.viewport_left + col.saturating_sub(content_x))
-                    .min(pane.lines[buf_row].len().saturating_sub(1));
-                pane.cursor_row = buf_row;
-                pane.cursor_col = buf_col;
-                // Leave visual mode on click
-                if matches!(self.mode, Mode::Visual { .. }) {
-                    self.mode = Mode::Normal;
-                    self.visual_anchor = None;
-                }
-                break;
-            }
+        let hit = self
+            .pane_rects
+            .iter()
+            .position(|r| r.contains(Position::new(col as u16, row as u16)));
+        let Some(i) = hit else {
+            return;
+        };
+        let rect = self.pane_rects[i];
+        self.active_pane = i;
+        let pane = &mut self.panes[i];
+        // Content starts after the 1-col git gutter (when there is room).
+        const GUTTER: usize = 1;
+        let content_x = if rect.width as usize > GUTTER {
+            rect.x as usize + GUTTER
+        } else {
+            rect.x as usize
+        };
+        let buf_row =
+            (pane.viewport_top + row - rect.y as usize).min(pane.lines.len().saturating_sub(1));
+        let buf_col = (pane.viewport_left + col.saturating_sub(content_x))
+            .min(pane.lines[buf_row].len().saturating_sub(1));
+        pane.cursor_row = buf_row;
+        pane.cursor_col = buf_col;
+        // Leave visual mode on click
+        if matches!(self.mode, Mode::Visual { .. }) {
+            self.exit_visual();
         }
     }
 
@@ -424,7 +407,7 @@ impl App {
         match keymap::match_seq(&seq_str) {
             MatchResult::Prefix => {
                 let hint = keymap::hint_for_prefix(&seq_str);
-                self.message = Some(format!("[{}]  {}", seq_str, hint));
+                self.message = Some(format!("[{seq_str}]  {hint}"));
                 // keep accumulating
             }
             MatchResult::Action(action) => {
@@ -432,45 +415,49 @@ impl App {
                 self.dispatch_action(action);
             }
             MatchResult::NoMatch => {
-                let was_accumulating = self.key_seq.len() > 1;
-                let solo_key = self.key_seq.remove(0);
+                // A failed multi-key sequence is discarded; only a lone key
+                // falls through to the single-key bindings.
+                let solo = (self.key_seq.len() == 1).then(|| self.key_seq[0]);
                 self.key_seq.clear();
-                if !was_accumulating {
-                    self.handle_single_normal(solo_key);
+                if let Some(key) = solo {
+                    self.handle_single_normal(key);
                 }
-                // If was_accumulating: discard the failed sequence
             }
         }
     }
 
+    /// Cursor motions shared by Normal and Visual mode. Returns whether `key`
+    /// was a motion (and has been applied).
+    fn apply_motion(&mut self, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let pane = self.pane_mut();
+        match key.code {
+            KeyCode::Char('h') | KeyCode::Left => pane.move_left(),
+            KeyCode::Char('j') | KeyCode::Down => pane.move_down(1),
+            KeyCode::Char('k') | KeyCode::Up => pane.move_up(1),
+            KeyCode::Char('l') | KeyCode::Right => pane.move_right(),
+            KeyCode::Char('w') if !ctrl => pane.move_word_forward(),
+            KeyCode::Char('b') if !ctrl => pane.move_word_backward(),
+            KeyCode::Char('0') | KeyCode::Home => pane.move_line_start(),
+            KeyCode::Char('$') | KeyCode::End => pane.move_line_end(),
+            KeyCode::Char('G') => pane.move_file_end(),
+            _ => return false,
+        }
+        true
+    }
+
     /// Handle single-key normal-mode bindings (not part of a multi-key sequence).
     fn handle_single_normal(&mut self, key: KeyEvent) {
+        if self.apply_motion(key) {
+            return;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            // ── Movement ─────────────────────────────────────────────────────
-            KeyCode::Char('h') | KeyCode::Left => self.pane_mut().move_left(),
-            KeyCode::Char('j') | KeyCode::Down => self.pane_mut().move_down(1),
-            KeyCode::Char('k') | KeyCode::Up => self.pane_mut().move_up(1),
-            KeyCode::Char('l') | KeyCode::Right => self.pane_mut().move_right(),
-            KeyCode::Char('w') if !ctrl => self.pane_mut().move_word_forward(),
-            KeyCode::Char('b') if !ctrl => self.pane_mut().move_word_backward(),
-            KeyCode::Char('0') | KeyCode::Home => self.pane_mut().move_line_start(),
-            KeyCode::Char('$') | KeyCode::End => self.pane_mut().move_line_end(),
-            KeyCode::Char('G') => self.pane_mut().move_file_end(),
-
             // Ctrl scrolling
-            KeyCode::Char('d') if ctrl => {
-                self.pane_mut().move_down(20);
-            }
-            KeyCode::Char('u') if ctrl => {
-                self.pane_mut().move_up(20);
-            }
-            KeyCode::Char('f') if ctrl => {
-                self.pane_mut().move_down(40);
-            }
-            KeyCode::Char('b') if ctrl => {
-                self.pane_mut().move_up(40);
-            }
+            KeyCode::Char('d') if ctrl => self.pane_mut().move_down(20),
+            KeyCode::Char('u') if ctrl => self.pane_mut().move_up(20),
+            KeyCode::Char('f') if ctrl => self.pane_mut().move_down(40),
+            KeyCode::Char('b') if ctrl => self.pane_mut().move_up(40),
 
             // ── Undo ─────────────────────────────────────────────────────────
             KeyCode::Char('u') => {
@@ -483,14 +470,8 @@ impl App {
             KeyCode::Char('x') => self.pane_mut().delete_char_at_cursor(),
 
             // ── Paste ────────────────────────────────────────────────────────
-            KeyCode::Char('p') => {
-                let reg = self.register.clone();
-                self.pane_mut().paste_lines_after(&reg);
-            }
-            KeyCode::Char('P') => {
-                let reg = self.register.clone();
-                self.pane_mut().paste_lines_before(&reg);
-            }
+            KeyCode::Char('p') => self.panes[self.active_pane].paste_lines_after(&self.register),
+            KeyCode::Char('P') => self.panes[self.active_pane].paste_lines_before(&self.register),
 
             // ── Mode switches ─────────────────────────────────────────────────
             KeyCode::Char('i') => {
@@ -515,16 +496,8 @@ impl App {
                 self.pane_mut().open_line_above();
                 self.mode = Mode::Insert;
             }
-            KeyCode::Char('v') => {
-                let (r, c) = (self.pane().cursor_row, self.pane().cursor_col);
-                self.visual_anchor = Some((r, c));
-                self.mode = Mode::Visual { line_wise: false };
-            }
-            KeyCode::Char('V') => {
-                let r = self.pane().cursor_row;
-                self.visual_anchor = Some((r, 0));
-                self.mode = Mode::Visual { line_wise: true };
-            }
+            KeyCode::Char('v') => self.enter_visual(false),
+            KeyCode::Char('V') => self.enter_visual(true),
             KeyCode::Char(':') => {
                 self.command_buf.clear();
                 self.mode = Mode::Command;
@@ -549,8 +522,8 @@ impl App {
                         let resolved = self.resolve_link_path(raw);
                         if resolved.is_dir() {
                             self.enter_browse(&resolved);
-                        } else if let Some(path) = resolved.to_str() {
-                            self.open_file(path, false);
+                        } else {
+                            self.open_file(&resolved, false);
                         }
                     }
                 } else {
@@ -572,13 +545,11 @@ impl App {
     fn dispatch_action(&mut self, action: Action) {
         match action {
             Action::GoToFileStart => self.pane_mut().move_file_start(),
-            Action::GoToFileEnd => self.pane_mut().move_file_end(),
             Action::DeleteLine => {
                 let line = self.pane_mut().delete_line();
                 self.register = vec![line];
             }
             Action::DeleteWord => self.pane_mut().delete_word(),
-            Action::DeleteChar => self.pane_mut().delete_char_at_cursor(),
             Action::YankLine => {
                 let line = self.pane().yank_line();
                 self.register = vec![line];
@@ -598,13 +569,7 @@ impl App {
                     "Links: showing target".into()
                 });
             }
-            Action::QuitAll => {
-                if self.panes.iter().any(|p| p.modified) {
-                    self.message = Some("Unsaved changes — use :q! or :wq".into());
-                } else {
-                    self.should_quit = true;
-                }
-            }
+            Action::QuitAll => self.quit_if_clean(),
             Action::BufferList => self.enter_buffer_list(),
             Action::NextBuffer => self.cycle_buffer(1),
             Action::PrevBuffer => self.cycle_buffer(-1),
@@ -711,16 +676,36 @@ impl App {
         }
     }
 
+    fn quit_if_clean(&mut self) {
+        if self.panes.iter().any(|p| p.modified) {
+            self.message = Some("Unsaved changes — use :q! or :wq".into());
+        } else {
+            self.should_quit = true;
+        }
+    }
+
+    /// `:e` / `:e!` — open a file, or browse if `arg` names a directory.
+    fn edit_command(&mut self, arg: Option<&str>, force: bool) {
+        let Some(path) = arg.map(Path::new) else {
+            let bang = if force { "!" } else { "" };
+            self.message = Some(format!("Usage: :e{bang} <filename>"));
+            return;
+        };
+        if path.is_dir() {
+            self.enter_browse(path);
+        } else {
+            self.open_file(path, force);
+        }
+    }
+
     fn execute_command(&mut self, cmd: &str) {
-        let parts: Vec<&str> = cmd.trim().splitn(2, ' ').collect();
-        match parts[0] {
-            "q" => {
-                if self.panes.iter().any(|p| p.modified) {
-                    self.message = Some("Unsaved changes — use :q! or :wq".into());
-                } else {
-                    self.should_quit = true;
-                }
-            }
+        let cmd = cmd.trim();
+        let (verb, arg) = match cmd.split_once(' ') {
+            Some((verb, arg)) => (verb, Some(arg.trim()).filter(|s| !s.is_empty())),
+            None => (cmd, None),
+        };
+        match verb {
+            "q" => self.quit_if_clean(),
             "q!" => self.should_quit = true,
             "w" => self.save_active(),
             "wq" | "x" => {
@@ -729,43 +714,22 @@ impl App {
             }
             "sp" | "split" => self.split(SplitDir::Horizontal),
             "vs" | "vsplit" => self.split(SplitDir::Vertical),
-            "e" | "edit" => {
-                if let Some(path) = parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                    if Path::new(path).is_dir() {
-                        self.enter_browse(Path::new(path));
-                    } else {
-                        self.open_file(path, false);
-                    }
-                } else {
-                    self.message = Some("Usage: :e <filename>".into());
-                }
-            }
-            "e!" | "edit!" => {
-                if let Some(path) = parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                    if Path::new(path).is_dir() {
-                        self.enter_browse(Path::new(path));
-                    } else {
-                        self.open_file(path, true);
-                    }
-                } else {
-                    self.message = Some("Usage: :e! <filename>".into());
-                }
-            }
+            "e" | "edit" => self.edit_command(arg, false),
+            "e!" | "edit!" => self.edit_command(arg, true),
             "Ex" | "Explore" | "explore" => {
-                let dir = match parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                    Some(path) => StdPathBuf::from(path),
+                let dir = match arg {
+                    Some(path) => PathBuf::from(path),
                     None => self
                         .pane()
                         .file_path
-                        .as_ref()
-                        .and_then(|p| p.parent())
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|| StdPathBuf::from(".")),
+                        .as_deref()
+                        .and_then(Path::parent)
+                        .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
                 };
                 self.enter_browse(&dir);
             }
             other => {
-                self.message = Some(format!("Unknown command: {}", other));
+                self.message = Some(format!("Unknown command: {other}"));
             }
         }
     }
@@ -775,16 +739,12 @@ impl App {
     fn handle_search(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
-                let (r, c) = self.search_origin;
-                self.pane_mut().cursor_row = r;
-                self.pane_mut().cursor_col = c;
+                self.restore_search_origin();
                 self.search_matches.clear();
                 self.mode = Mode::Normal;
             }
             KeyCode::Enter => {
-                if self.search_matches.is_empty() && !self.search_buf.is_empty() {
-                    self.message = Some(format!("Pattern not found: {}", self.search_buf));
-                }
+                self.report_if_no_matches();
                 self.mode = Mode::Normal;
             }
             KeyCode::Backspace => {
@@ -799,40 +759,42 @@ impl App {
         }
     }
 
+    fn restore_search_origin(&mut self) {
+        let (r, c) = self.search_origin;
+        let pane = self.pane_mut();
+        pane.cursor_row = r;
+        pane.cursor_col = c;
+    }
+
+    /// Set the "Pattern not found" message when a non-empty query matched nothing.
+    fn report_if_no_matches(&mut self) {
+        if self.search_matches.is_empty() && !self.search_buf.is_empty() {
+            self.message = Some(format!("Pattern not found: {}", self.search_buf));
+        }
+    }
+
     /// Recompute `search_matches` from the current `search_buf` and jump to
     /// the nearest match at or after `search_origin`.  When `from_origin` is
     /// true the match index resets from the origin even if the query shrank.
     fn recompute_search(&mut self, from_origin: bool) {
-        let query = self.search_buf.clone();
-        if query.is_empty() {
+        if self.search_buf.is_empty() {
             self.search_matches.clear();
-            let (r, c) = self.search_origin;
-            self.pane_mut().cursor_row = r;
-            self.pane_mut().cursor_col = c;
+            self.restore_search_origin();
             return;
         }
-        let qlen = query.len();
-        self.search_matches = self
-            .pane()
+        let query = self.search_buf.as_str();
+        self.search_matches = self.panes[self.active_pane]
             .lines
             .iter()
             .enumerate()
-            .flat_map(|(row, line)| {
-                let mut hits = Vec::new();
-                let mut start = 0;
-                while let Some(pos) = line[start..].find(query.as_str()) {
-                    hits.push((row, start + pos));
-                    start += pos + qlen.max(1);
-                }
-                hits
-            })
+            .flat_map(|(row, line)| line.match_indices(query).map(move |(col, _)| (row, col)))
             .collect();
 
-        let (or, oc) = self.search_origin;
         if self.search_matches.is_empty() {
             return;
         }
         if from_origin || self.search_match_idx >= self.search_matches.len() {
+            let (or, oc) = self.search_origin;
             self.search_match_idx = self
                 .search_matches
                 .iter()
@@ -852,9 +814,7 @@ impl App {
 
     fn next_search_match(&mut self) {
         if self.search_matches.is_empty() {
-            if !self.search_buf.is_empty() {
-                self.message = Some(format!("Pattern not found: {}", self.search_buf));
-            }
+            self.report_if_no_matches();
             return;
         }
         self.search_match_idx = (self.search_match_idx + 1) % self.search_matches.len();
@@ -863,9 +823,7 @@ impl App {
 
     fn prev_search_match(&mut self) {
         if self.search_matches.is_empty() {
-            if !self.search_buf.is_empty() {
-                self.message = Some(format!("Pattern not found: {}", self.search_buf));
-            }
+            self.report_if_no_matches();
             return;
         }
         self.search_match_idx = self
@@ -877,68 +835,49 @@ impl App {
 
     // ── Visual mode ───────────────────────────────────────────────────────────
 
+    /// Start (or switch) a visual selection anchored at the cursor. Line-wise
+    /// selections anchor at column 0.
+    fn enter_visual(&mut self, line_wise: bool) {
+        let pane = self.pane();
+        let col = if line_wise { 0 } else { pane.cursor_col };
+        self.visual_anchor = Some((pane.cursor_row, col));
+        self.mode = Mode::Visual { line_wise };
+    }
+
+    fn exit_visual(&mut self) {
+        self.mode = Mode::Normal;
+        self.visual_anchor = None;
+    }
+
     fn handle_visual(&mut self, key: KeyEvent, line_wise: bool) {
+        // Movement extends the selection.
+        if self.apply_motion(key) {
+            return;
+        }
+        let cursor = (self.pane().cursor_row, self.pane().cursor_col);
+        let anchor = self.visual_anchor.unwrap_or(cursor);
         match key.code {
-            KeyCode::Esc => {
-                self.mode = Mode::Normal;
-                self.visual_anchor = None;
-            }
-            // Movement — extends selection
-            KeyCode::Char('h') | KeyCode::Left => self.pane_mut().move_left(),
-            KeyCode::Char('j') | KeyCode::Down => self.pane_mut().move_down(1),
-            KeyCode::Char('k') | KeyCode::Up => self.pane_mut().move_up(1),
-            KeyCode::Char('l') | KeyCode::Right => self.pane_mut().move_right(),
-            KeyCode::Char('w') => self.pane_mut().move_word_forward(),
-            KeyCode::Char('b') => self.pane_mut().move_word_backward(),
-            KeyCode::Char('0') | KeyCode::Home => self.pane_mut().move_line_start(),
-            KeyCode::Char('$') | KeyCode::End => self.pane_mut().move_line_end(),
-            KeyCode::Char('G') => self.pane_mut().move_file_end(),
-            KeyCode::Char('g') => {
-                // gg in visual (single keypress is fine here — no ambiguity needed)
-                self.pane_mut().move_file_start();
-            }
+            KeyCode::Esc => self.exit_visual(),
+            // gg in visual (single keypress is fine here — no ambiguity needed)
+            KeyCode::Char('g') => self.pane_mut().move_file_start(),
             // Operators on selection
-            KeyCode::Char('d') | KeyCode::Char('x') => {
-                let anchor = self
-                    .visual_anchor
-                    .unwrap_or((self.pane().cursor_row, self.pane().cursor_col));
-                let cursor = (self.pane().cursor_row, self.pane().cursor_col);
-                if line_wise {
-                    let removed = self.pane_mut().delete_lines(anchor.0, cursor.0);
-                    self.register = removed;
+            KeyCode::Char('d' | 'x') => {
+                self.register = if line_wise {
+                    self.pane_mut().delete_lines(anchor.0, cursor.0)
                 } else {
-                    let removed = self.pane_mut().delete_char_selection(anchor, cursor);
-                    self.register = removed;
-                }
-                self.mode = Mode::Normal;
-                self.visual_anchor = None;
+                    self.pane_mut().delete_char_selection(anchor, cursor)
+                };
+                self.exit_visual();
             }
             KeyCode::Char('y') => {
-                let anchor = self
-                    .visual_anchor
-                    .unwrap_or((self.pane().cursor_row, self.pane().cursor_col));
-                let cursor_row = self.pane().cursor_row;
-                if line_wise {
-                    self.register = self.pane().yank_lines(anchor.0, cursor_row);
-                } else {
-                    // Char-wise yank: collect the text (simplified to full lines)
-                    self.register = self.pane().yank_lines(anchor.0, cursor_row);
-                }
+                // Char-wise yank is simplified to full lines.
+                self.register = self.pane().yank_lines(anchor.0, cursor.0);
                 self.message = Some(format!("{} lines yanked", self.register.len()));
-                self.mode = Mode::Normal;
-                self.visual_anchor = None;
+                self.exit_visual();
             }
             // Toggle between V and v
-            KeyCode::Char('v') if line_wise => {
-                let (r, c) = (self.pane().cursor_row, self.pane().cursor_col);
-                self.visual_anchor = Some((r, c));
-                self.mode = Mode::Visual { line_wise: false };
-            }
-            KeyCode::Char('V') if !line_wise => {
-                let r = self.pane().cursor_row;
-                self.visual_anchor = Some((r, 0));
-                self.mode = Mode::Visual { line_wise: true };
-            }
+            KeyCode::Char('v') if line_wise => self.enter_visual(false),
+            KeyCode::Char('V') if !line_wise => self.enter_visual(true),
             _ => {}
         }
     }
@@ -947,7 +886,7 @@ impl App {
 
     fn split(&mut self, dir: SplitDir) {
         let new_pane = match &self.panes[self.active_pane].file_path {
-            Some(p) => Pane::from_file(p.to_str().unwrap_or("")).unwrap_or_else(|_| Pane::empty()),
+            Some(p) => Pane::from_file(p).unwrap_or_else(|_| Pane::empty()),
             None => Pane::empty(),
         };
         let new_idx = self.panes.len();
@@ -989,40 +928,40 @@ impl App {
         if self.panes.len() < 2 || self.pane_rects.len() != self.panes.len() {
             return;
         }
-        let cur = self.pane_rects[self.active_pane];
-        let cur_center_x = cur.x as i32 + cur.width as i32 / 2;
-        let cur_center_y = cur.y as i32 + cur.height as i32 / 2;
+        let edges = |r: &Rect| {
+            (
+                i32::from(r.x),
+                i32::from(r.x) + i32::from(r.width),
+                i32::from(r.y),
+                i32::from(r.y) + i32::from(r.height),
+            )
+        };
+        let (cur_l, cur_r, cur_t, cur_b) = edges(&self.pane_rects[self.active_pane]);
+        let (cur_cx, cur_cy) = ((cur_l + cur_r) / 2, (cur_t + cur_b) / 2);
 
-        let mut best: Option<(usize, i32)> = None;
-        for (i, rect) in self.pane_rects.iter().enumerate() {
-            if i == self.active_pane {
-                continue;
-            }
-            let in_direction = match dir {
-                PaneDir::Left => rect.x as i32 + rect.width as i32 <= cur.x as i32,
-                PaneDir::Right => rect.x as i32 >= cur.x as i32 + cur.width as i32,
-                PaneDir::Up => rect.y as i32 + rect.height as i32 <= cur.y as i32,
-                PaneDir::Down => rect.y as i32 >= cur.y as i32 + cur.height as i32,
-            };
-            if !in_direction {
-                continue;
-            }
-            let center_x = rect.x as i32 + rect.width as i32 / 2;
-            let center_y = rect.y as i32 + rect.height as i32 / 2;
-            // Primary-axis gap dominates; cross-axis offset breaks ties so the
-            // best-aligned neighbor wins over a merely closer one.
-            let dist = match dir {
-                PaneDir::Left | PaneDir::Right => {
-                    (center_x - cur_center_x).abs() + (center_y - cur_center_y).abs() * 4
-                }
-                PaneDir::Up | PaneDir::Down => {
-                    (center_y - cur_center_y).abs() + (center_x - cur_center_x).abs() * 4
-                }
-            };
-            if best.is_none_or(|(_, best_dist)| dist < best_dist) {
-                best = Some((i, dist));
-            }
-        }
+        let best = self
+            .pane_rects
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != self.active_pane)
+            .filter_map(|(i, rect)| {
+                let (l, r, t, b) = edges(rect);
+                let in_direction = match dir {
+                    PaneDir::Left => r <= cur_l,
+                    PaneDir::Right => l >= cur_r,
+                    PaneDir::Up => b <= cur_t,
+                    PaneDir::Down => t >= cur_b,
+                };
+                // Primary-axis gap dominates; cross-axis offset breaks ties so
+                // the best-aligned neighbor wins over a merely closer one.
+                let (dx, dy) = (((l + r) / 2 - cur_cx).abs(), ((t + b) / 2 - cur_cy).abs());
+                let dist = match dir {
+                    PaneDir::Left | PaneDir::Right => dx + dy * 4,
+                    PaneDir::Up | PaneDir::Down => dy + dx * 4,
+                };
+                in_direction.then_some((i, dist))
+            })
+            .min_by_key(|&(_, dist)| dist);
         if let Some((idx, _)) = best {
             self.active_pane = idx;
         }
@@ -1033,7 +972,7 @@ impl App {
     /// Resolve a link target against the active pane's file directory, so
     /// relative links (e.g. `[[notes/foo.org]]`) work regardless of the
     /// process's current working directory.
-    fn resolve_link_path(&self, raw: &str) -> StdPathBuf {
+    fn resolve_link_path(&self, raw: &str) -> PathBuf {
         let p = Path::new(raw);
         if p.is_absolute() {
             return p.to_path_buf();
@@ -1044,7 +983,7 @@ impl App {
         }
     }
 
-    fn open_file(&mut self, path: &str, force: bool) {
+    fn open_file(&mut self, path: &Path, force: bool) {
         if !force && self.pane().modified {
             self.message = Some("Unsaved changes — :w first, or :e! to discard".into());
             return;
@@ -1060,7 +999,7 @@ impl App {
                 self.mode = Mode::Normal;
             }
             Err(e) => {
-                self.message = Some(format!("Cannot open \"{}\": {}", path, e));
+                self.message = Some(format!("Cannot open \"{}\": {e}", path.display()));
             }
         }
     }
@@ -1068,18 +1007,19 @@ impl App {
     // ── Buffer list ───────────────────────────────────────────────────────────
 
     /// Move `path` to the front of the MRU buffer list, deduping.
-    fn record_buffer(&mut self, path: StdPathBuf) {
+    fn record_buffer(&mut self, path: PathBuf) {
         self.buffers.retain(|p| p != &path);
         self.buffers.insert(0, path);
     }
 
+    /// Index in the MRU list of the active pane's file, if it is listed.
+    fn active_buffer_index(&self) -> Option<usize> {
+        let active = self.pane().file_path.as_ref()?;
+        self.buffers.iter().position(|p| p == active)
+    }
+
     fn enter_buffer_list(&mut self) {
-        self.buf_list_selected = self
-            .pane()
-            .file_path
-            .as_ref()
-            .and_then(|active| self.buffers.iter().position(|p| p == active))
-            .unwrap_or(0);
+        self.buf_list_selected = self.active_buffer_index().unwrap_or(0);
         self.buf_list_scroll = 0;
         self.mode = Mode::BufferList;
         self.key_seq.clear();
@@ -1091,10 +1031,7 @@ impl App {
                 self.mode = Mode::Normal;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !self.buffers.is_empty() {
-                    self.buf_list_selected =
-                        (self.buf_list_selected + 1).min(self.buffers.len() - 1);
-                }
+                select_down(&mut self.buf_list_selected, self.buffers.len(), 1);
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.buf_list_selected = self.buf_list_selected.saturating_sub(1);
@@ -1112,9 +1049,7 @@ impl App {
                     self.mode = Mode::Normal;
                     return;
                 };
-                if let Some(path_str) = path.to_str().map(|s| s.to_string()) {
-                    self.open_file(&path_str, false);
-                }
+                self.open_file(&path, false);
             }
             _ => {}
         }
@@ -1127,20 +1062,12 @@ impl App {
             self.message = Some("No other buffers".into());
             return;
         }
-        let current = self
-            .pane()
-            .file_path
-            .as_ref()
-            .and_then(|active| self.buffers.iter().position(|p| p == active));
         let len = self.buffers.len() as isize;
-        let next_idx = match current {
-            Some(idx) => (idx as isize + dir).rem_euclid(len) as usize,
-            None => 0,
-        };
-        let Some(path_str) = self.buffers[next_idx].to_str().map(|s| s.to_string()) else {
-            return;
-        };
-        self.open_file(&path_str, false);
+        let next_idx = self
+            .active_buffer_index()
+            .map_or(0, |idx| (idx as isize + dir).rem_euclid(len) as usize);
+        let path = self.buffers[next_idx].clone();
+        self.open_file(&path, false);
     }
 
     /// Forget the active pane's file from the buffer list and switch the
@@ -1156,14 +1083,8 @@ impl App {
         };
         self.buffers.retain(|p| p != &path);
         match self.buffers.first().cloned() {
-            Some(next) => {
-                if let Some(path_str) = next.to_str().map(|s| s.to_string()) {
-                    self.open_file(&path_str, false);
-                }
-            }
-            None => {
-                self.panes[self.active_pane] = Pane::empty();
-            }
+            Some(next) => self.open_file(&next, false),
+            None => self.panes[self.active_pane] = Pane::empty(),
         }
         self.message = Some(format!("Killed buffer {}", path.display()));
     }
@@ -1173,27 +1094,25 @@ impl App {
     /// List `dir` and switch to `Mode::Browse`. Shows subdirectories and
     /// `.org` files only, directories first, alphabetically within each group.
     fn enter_browse(&mut self, dir: &Path) {
-        let mut entries: Vec<BrowseEntry> = match std::fs::read_dir(dir) {
-            Ok(read_dir) => read_dir
-                .flatten()
-                .filter_map(|entry| {
-                    let name = entry.file_name().into_string().ok()?;
-                    if name.starts_with('.') {
-                        return None;
-                    }
-                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                    if !is_dir && !name.ends_with(".org") {
-                        return None;
-                    }
-                    Some(BrowseEntry { name, is_dir })
-                })
-                .collect(),
+        let read_dir = match std::fs::read_dir(dir) {
+            Ok(rd) => rd,
             Err(e) => {
-                self.message = Some(format!("Cannot open \"{}\": {}", dir.display(), e));
+                self.message = Some(format!("Cannot open \"{}\": {e}", dir.display()));
                 return;
             }
         };
-        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+        let mut entries: Vec<BrowseEntry> = read_dir
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                if name.starts_with('.') {
+                    return None;
+                }
+                let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+                (is_dir || name.ends_with(".org")).then_some(BrowseEntry { name, is_dir })
+            })
+            .collect();
+        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
         if dir.parent().is_some() {
             entries.insert(
                 0,
@@ -1211,50 +1130,41 @@ impl App {
         self.key_seq.clear();
     }
 
+    fn browse_parent(&mut self) {
+        if let Some(parent) = self.browse_dir.parent().map(Path::to_path_buf) {
+            self.enter_browse(&parent);
+        }
+    }
+
     fn handle_browse(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let len = self.browse_entries.len();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.mode = Mode::Normal;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.browse_entries.is_empty() {
-                    self.browse_selected =
-                        (self.browse_selected + 1).min(self.browse_entries.len() - 1);
-                }
-            }
+            KeyCode::Char('j') | KeyCode::Down => select_down(&mut self.browse_selected, len, 1),
             KeyCode::Char('k') | KeyCode::Up => {
                 self.browse_selected = self.browse_selected.saturating_sub(1);
             }
-            KeyCode::Char('d') if ctrl => {
-                if !self.browse_entries.is_empty() {
-                    self.browse_selected =
-                        (self.browse_selected + 20).min(self.browse_entries.len() - 1);
-                }
-            }
+            KeyCode::Char('d') if ctrl => select_down(&mut self.browse_selected, len, 20),
             KeyCode::Char('u') if ctrl => {
                 self.browse_selected = self.browse_selected.saturating_sub(20);
             }
-            KeyCode::Char('-') | KeyCode::Backspace => {
-                if let Some(parent) = self.browse_dir.clone().parent() {
-                    self.enter_browse(parent);
-                }
-            }
+            KeyCode::Char('-') | KeyCode::Backspace => self.browse_parent(),
             KeyCode::Enter => {
-                let Some(entry) = self.browse_entries.get(self.browse_selected).cloned() else {
+                let Some(entry) = self.browse_entries.get(self.browse_selected) else {
                     return;
                 };
                 if entry.name == ".." {
-                    if let Some(parent) = self.browse_dir.clone().parent() {
-                        self.enter_browse(parent);
-                    }
+                    self.browse_parent();
                     return;
                 }
                 let target = self.browse_dir.join(&entry.name);
                 if entry.is_dir {
                     self.enter_browse(&target);
-                } else if let Some(path) = target.to_str() {
-                    self.open_file(path, false);
+                } else {
+                    self.open_file(&target, false);
                 }
             }
             _ => {}
@@ -1262,10 +1172,8 @@ impl App {
     }
 
     fn save_active(&mut self) {
-        match self.panes[self.active_pane].save() {
-            Ok(msg) => self.message = Some(msg),
-            Err(e) => self.message = Some(e),
-        }
+        let result = self.panes[self.active_pane].save();
+        self.message = Some(result.unwrap_or_else(|e| e));
     }
 
     // ── Visual selection query (used by ui.rs) ────────────────────────────────

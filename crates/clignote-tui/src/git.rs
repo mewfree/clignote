@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineStatus {
     #[default]
     Unchanged,
@@ -34,7 +34,7 @@ pub fn get_head_lines(path: &Path) -> Option<Vec<String>> {
     }
 
     let text = std::str::from_utf8(&output.stdout).ok()?;
-    Some(text.lines().map(|l| l.to_string()).collect())
+    Some(text.lines().map(str::to_owned).collect())
 }
 
 /// Diff `current` buffer lines against `head` (committed) lines.
@@ -45,10 +45,9 @@ pub fn get_head_lines(path: &Path) -> Option<Vec<String>> {
 /// - `Unchanged` — line is identical in HEAD
 ///
 /// If `head` is `None` the file is new; every line is `Added`.
-pub fn diff_with_head(head: Option<&Vec<String>>, current: &[String]) -> Vec<LineStatus> {
-    let head = match head {
-        Some(h) => h,
-        None => return vec![LineStatus::Added; current.len()],
+pub fn diff_with_head(head: Option<&[String]>, current: &[String]) -> Vec<LineStatus> {
+    let Some(head) = head else {
+        return vec![LineStatus::Added; current.len()];
     };
 
     let old: Vec<&str> = head.iter().map(String::as_str).collect();
@@ -110,14 +109,15 @@ fn lcs_classify(old: &[&str], new: &[&str]) -> Vec<LineStatus> {
         return result;
     }
 
-    // Build LCS DP table (working backwards).
-    let mut dp = vec![vec![0u16; mn + 1]; mm + 1];
+    // Build LCS DP table (working backwards) as one flat, row-major buffer.
+    let stride = mn + 1;
+    let mut dp = vec![0u16; (mm + 1) * stride];
     for i in (0..mm).rev() {
         for j in (0..mn).rev() {
-            dp[i][j] = if old_mid[i] == new_mid[j] {
-                dp[i + 1][j + 1].saturating_add(1)
+            dp[i * stride + j] = if old_mid[i] == new_mid[j] {
+                dp[(i + 1) * stride + j + 1].saturating_add(1)
             } else {
-                dp[i + 1][j].max(dp[i][j + 1])
+                dp[(i + 1) * stride + j].max(dp[i * stride + j + 1])
             };
         }
     }
@@ -142,7 +142,7 @@ fn lcs_classify(old: &[&str], new: &[&str]) -> Vec<LineStatus> {
             if i < mm && j < mn && old_mid[i] == new_mid[j] {
                 break; // back to equal
             }
-            if i < mm && (j >= mn || dp[i + 1][j] >= dp[i][j + 1]) {
+            if i < mm && (j >= mn || dp[(i + 1) * stride + j] >= dp[i * stride + j + 1]) {
                 has_delete = true;
                 i += 1;
             } else if j < mn {

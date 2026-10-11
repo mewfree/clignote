@@ -144,26 +144,13 @@ impl<'a> Parser<'a> {
         self.advance(); // consume #+begin_…
 
         if kind == "SRC" {
-            let language = params
-                .split_whitespace()
-                .next()
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
+            let language = params.split_whitespace().next().map(str::to_owned);
             let mut body_lines: Vec<&str> = Vec::new();
-            loop {
-                match self.peek_line() {
-                    None => break,
-                    Some(line) => match tokenize_line(line) {
-                        LineToken::EndBlock(_) => {
-                            self.advance();
-                            break;
-                        }
-                        _ => {
-                            body_lines.push(line);
-                            self.advance();
-                        }
-                    },
+            while let Some(line) = self.advance() {
+                if matches!(tokenize_line(line), LineToken::EndBlock(_)) {
+                    break;
                 }
+                body_lines.push(line);
             }
             Some(Block::SrcBlock(SrcBlock {
                 language,
@@ -171,16 +158,9 @@ impl<'a> Parser<'a> {
             }))
         } else {
             // Generic block: skip until #+end_KIND
-            loop {
-                match self.peek_token() {
-                    None => break,
-                    Some(LineToken::EndBlock(k)) if k == kind => {
-                        self.advance();
-                        break;
-                    }
-                    _ => {
-                        self.advance();
-                    }
+            while let Some(line) = self.advance() {
+                if matches!(tokenize_line(line), LineToken::EndBlock(k) if k == kind) {
+                    break;
                 }
             }
             Some(Block::BlankLine) // TODO: implement QuoteBlock etc.

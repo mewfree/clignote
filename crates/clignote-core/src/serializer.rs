@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use crate::document::*;
 
 /// Serialize a `Document` back to org-mode text.
@@ -9,7 +11,8 @@ pub fn serialize(doc: &Document) -> String {
     let mut out = String::new();
 
     for kw in &doc.keywords {
-        out.push_str(&format!("#+{}: {}\n", kw.key, kw.value));
+        // Writing to a `String` is infallible.
+        let _ = writeln!(out, "#+{}: {}", kw.key, kw.value);
     }
 
     for section in &doc.sections {
@@ -21,20 +24,19 @@ pub fn serialize(doc: &Document) -> String {
 
 fn serialize_section(out: &mut String, section: &Section) {
     if let Some(h) = &section.headline {
-        let stars = "*".repeat(h.level as usize);
-        let kw = h
-            .todo_keyword
-            .as_deref()
-            .map(|k| format!("{} ", k))
-            .unwrap_or_default();
-        let pri = h.priority.map(|p| format!("[#{}] ", p)).unwrap_or_default();
-        let title = serialize_inlines(&h.title);
-        let tags = if h.tags.is_empty() {
-            String::new()
-        } else {
-            format!("  :{}:", h.tags.join(":"))
-        };
-        out.push_str(&format!("{} {}{}{}{}\n", stars, kw, pri, title, tags));
+        out.extend(std::iter::repeat_n('*', h.level as usize));
+        out.push(' ');
+        if let Some(kw) = &h.todo_keyword {
+            let _ = write!(out, "{kw} ");
+        }
+        if let Some(p) = h.priority {
+            let _ = write!(out, "[#{p}] ");
+        }
+        write_inlines(out, &h.title);
+        if !h.tags.is_empty() {
+            let _ = write!(out, "  :{}:", h.tags.join(":"));
+        }
+        out.push('\n');
     }
 
     for block in &section.content {
@@ -50,19 +52,19 @@ fn serialize_block(out: &mut String, block: &Block) {
     match block {
         Block::Paragraph(lines) => {
             for line in lines {
-                out.push_str(&serialize_inlines(line));
+                write_inlines(out, line);
                 out.push('\n');
             }
         }
         Block::BlankLine => out.push('\n'),
         Block::HorizontalRule => out.push_str("-----\n"),
         Block::SrcBlock(src) => {
-            let lang = src.language.as_deref().unwrap_or("");
-            if lang.is_empty() {
-                out.push_str("#+begin_src\n");
-            } else {
-                out.push_str(&format!("#+begin_src {}\n", lang));
+            out.push_str("#+begin_src");
+            if let Some(lang) = src.language.as_deref().filter(|l| !l.is_empty()) {
+                out.push(' ');
+                out.push_str(lang);
             }
+            out.push('\n');
             if !src.body.is_empty() {
                 out.push_str(&src.body);
                 out.push('\n');
@@ -72,12 +74,12 @@ fn serialize_block(out: &mut String, block: &Block) {
         Block::PropertyDrawer(props) => {
             out.push_str(":PROPERTIES:\n");
             for p in props {
-                out.push_str(&format!(":{}: {}\n", p.key, p.value));
+                let _ = writeln!(out, ":{}: {}", p.key, p.value);
             }
             out.push_str(":END:\n");
         }
         Block::Drawer { name, lines } => {
-            out.push_str(&format!(":{}:\n", name));
+            let _ = writeln!(out, ":{name}:");
             for line in lines {
                 out.push_str(line);
                 out.push('\n');
@@ -92,12 +94,9 @@ fn serialize_block(out: &mut String, block: &Block) {
                     Some(CheckboxState::Partial) => "[-] ",
                     None => "",
                 };
-                out.push_str(&format!(
-                    "{} {}{}\n",
-                    item.bullet,
-                    cb,
-                    serialize_inlines(&item.content)
-                ));
+                let _ = write!(out, "{} {cb}", item.bullet);
+                write_inlines(out, &item.content);
+                out.push('\n');
             }
         }
     }
@@ -105,29 +104,25 @@ fn serialize_block(out: &mut String, block: &Block) {
 
 pub fn serialize_inlines(inlines: &[Inline]) -> String {
     let mut out = String::new();
+    write_inlines(&mut out, inlines);
+    out
+}
+
+/// Append `inner` to `out`, delimited by `marker` on both sides.
+fn write_wrapped(out: &mut String, marker: char, inner: &[Inline]) {
+    out.push(marker);
+    write_inlines(out, inner);
+    out.push(marker);
+}
+
+fn write_inlines(out: &mut String, inlines: &[Inline]) {
     for inline in inlines {
         match inline {
             Inline::Text(s) => out.push_str(s),
-            Inline::Bold(inner) => {
-                out.push('*');
-                out.push_str(&serialize_inlines(inner));
-                out.push('*');
-            }
-            Inline::Italic(inner) => {
-                out.push('/');
-                out.push_str(&serialize_inlines(inner));
-                out.push('/');
-            }
-            Inline::Underline(inner) => {
-                out.push('_');
-                out.push_str(&serialize_inlines(inner));
-                out.push('_');
-            }
-            Inline::Strikethrough(inner) => {
-                out.push('+');
-                out.push_str(&serialize_inlines(inner));
-                out.push('+');
-            }
+            Inline::Bold(inner) => write_wrapped(out, '*', inner),
+            Inline::Italic(inner) => write_wrapped(out, '/', inner),
+            Inline::Underline(inner) => write_wrapped(out, '_', inner),
+            Inline::Strikethrough(inner) => write_wrapped(out, '+', inner),
             Inline::Code(s) => {
                 out.push('~');
                 out.push_str(s);
@@ -144,7 +139,7 @@ pub fn serialize_inlines(inlines: &[Inline]) -> String {
                 out.push(']');
                 if let Some(desc) = &link.description {
                     out.push('[');
-                    out.push_str(&serialize_inlines(desc));
+                    write_inlines(out, desc);
                     out.push(']');
                 }
                 out.push(']');
@@ -160,7 +155,6 @@ pub fn serialize_inlines(inlines: &[Inline]) -> String {
             }
         }
     }
-    out
 }
 
 #[cfg(test)]

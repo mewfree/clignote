@@ -8,12 +8,15 @@ use ratatui::{
 
 use crate::app::{App, Mode, PaneLayout, SplitDir};
 use crate::git::LineStatus;
-use crate::pane::Pane;
+use crate::links;
+use crate::pane::{scroll_into_view, Pane};
 
-struct PaneRenderCtx<'a> {
+type VisualSel = (usize, usize, usize, usize, bool);
+
+struct PaneRenderCtx {
     is_active: bool,
-    visual_sel: Option<(usize, usize, usize, usize, bool)>,
-    mode: &'a Mode,
+    visual_sel: Option<VisualSel>,
+    mode: Mode,
     conceal_links: bool,
 }
 
@@ -26,8 +29,8 @@ struct SearchView<'a> {
 struct LineCtx<'a> {
     cursor_row: usize,
     cursor_col: usize,
-    visual_sel: Option<(usize, usize, usize, usize, bool)>,
-    mode: &'a Mode,
+    visual_sel: Option<VisualSel>,
+    mode: Mode,
     is_active: bool,
     search_spans: &'a [(usize, usize, bool)],
     conceal_links: bool,
@@ -54,43 +57,26 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Compute pane rects for this render pass and store them in App, indexed
     // by pane index (not tree position) so click/focus lookups stay simple.
-    let mut pane_hits: Vec<(usize, Rect)> = Vec::new();
-    layout_rects(&app.layout, editor_area, &mut pane_hits);
-    let mut pane_rects = vec![Rect::default(); app.panes.len()];
-    for (idx, rect) in &pane_hits {
-        pane_rects[*idx] = *rect;
-    }
-    app.pane_rects = pane_rects.clone();
-
-    // Snapshot search state so we can borrow panes mutably inside the loop.
-    let search_query_len = app.search_buf.len();
-    let search_matches: Vec<(usize, usize)> = app.search_matches.clone();
-    let search_match_idx = app.search_match_idx;
+    app.pane_rects = vec![Rect::default(); app.panes.len()];
+    layout_rects(&app.layout, editor_area, &mut app.pane_rects);
 
     // In Browse/BufferList mode, the active pane's content is replaced by the
     // overlay; other panes keep showing their buffers.
-    let active_overlay_rect = match app.mode {
-        Mode::Browse | Mode::BufferList => Some(pane_rects[app.active_pane]),
-        _ => None,
-    };
+    let overlay_active = matches!(app.mode, Mode::Browse | Mode::BufferList);
+    let visual_sel = app.visual_selection();
 
-    // Render each pane
-    for (i, &rect) in pane_rects.iter().enumerate() {
+    // Render each pane. Fields are borrowed disjointly, so the search matches
+    // can be read in place while the panes are mutated.
+    for i in 0..app.panes.len() {
         let is_active = i == app.active_pane;
-        if is_active && active_overlay_rect.is_some() {
+        if is_active && overlay_active {
             continue;
         }
-        let visual_sel = if is_active {
-            app.visual_selection()
-        } else {
-            None
-        };
-        let mode = if is_active { &app.mode } else { &Mode::Normal };
         let search = if is_active {
             SearchView {
-                matches: &search_matches,
-                query_len: search_query_len,
-                current_idx: Some(search_match_idx),
+                matches: &app.search_matches,
+                query_len: app.search_buf.len(),
+                current_idx: Some(app.search_match_idx),
             }
         } else {
             SearchView {
@@ -101,19 +87,24 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         };
         let pane_ctx = PaneRenderCtx {
             is_active,
-            visual_sel,
-            mode,
+            visual_sel: visual_sel.filter(|_| is_active),
+            mode: if is_active { app.mode } else { Mode::Normal },
             conceal_links: app.conceal_links,
         };
-        render_pane(frame, &mut app.panes[i], rect, &pane_ctx, &search);
+        render_pane(
+            frame,
+            &mut app.panes[i],
+            app.pane_rects[i],
+            &pane_ctx,
+            &search,
+        );
     }
 
-    if let Some(rect) = active_overlay_rect {
-        match app.mode {
-            Mode::Browse => render_browse(frame, app, rect),
-            Mode::BufferList => render_buffer_list(frame, app, rect),
-            _ => {}
-        }
+    let active_rect = app.pane_rects[app.active_pane];
+    match app.mode {
+        Mode::Browse => render_browse(frame, app, active_rect),
+        Mode::BufferList => render_buffer_list(frame, app, active_rect),
+        _ => {}
     }
 
     draw_dividers(frame, &app.layout, editor_area);
@@ -122,24 +113,26 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_cmdline(frame, app, cmdline_area);
 }
 
-/// Recursively split `area` per the window layout tree, collecting
-/// `(pane_idx, Rect)` pairs in tree order.
-fn layout_rects(layout: &PaneLayout, area: Rect, out: &mut Vec<(usize, Rect)>) {
+/// Divide `area` equally between `n` children of a split.
+fn split_rects(dir: SplitDir, n: usize, area: Rect) -> Vec<Rect> {
+    let direction = match dir {
+        SplitDir::Horizontal => Direction::Vertical, // stacked top/bottom
+        SplitDir::Vertical => Direction::Horizontal, // side by side
+    };
+    Layout::new(direction, vec![Constraint::Fill(1); n])
+        .split(area)
+        .to_vec()
+}
+
+/// Recursively split `area` per the window layout tree, writing each pane's
+/// rect into `out[pane_idx]`.
+fn layout_rects(layout: &PaneLayout, area: Rect, out: &mut [Rect]) {
     match layout {
-        PaneLayout::Leaf(idx) => out.push((*idx, area)),
+        PaneLayout::Leaf(idx) => out[*idx] = area,
         PaneLayout::Split { dir, children } => {
-            let direction = match dir {
-                SplitDir::Horizontal => Direction::Vertical, // stacked top/bottom
-                SplitDir::Vertical => Direction::Horizontal, // side by side
-            };
-            let constraints: Vec<Constraint> =
-                children.iter().map(|_| Constraint::Fill(1)).collect();
-            let rects = Layout::default()
-                .direction(direction)
-                .constraints(constraints)
-                .split(area);
-            for (child, rect) in children.iter().zip(rects.iter()) {
-                layout_rects(child, *rect, out);
+            let rects = split_rects(*dir, children.len(), area);
+            for (child, rect) in children.iter().zip(rects) {
+                layout_rects(child, rect, out);
             }
         }
     }
@@ -152,25 +145,18 @@ fn draw_dividers(frame: &mut Frame, layout: &PaneLayout, area: Rect) {
     let PaneLayout::Split { dir, children } = layout else {
         return;
     };
-    let direction = match dir {
-        SplitDir::Horizontal => Direction::Vertical,
-        SplitDir::Vertical => Direction::Horizontal,
-    };
-    let constraints: Vec<Constraint> = children.iter().map(|_| Constraint::Fill(1)).collect();
-    let rects = Layout::default()
-        .direction(direction)
-        .constraints(constraints)
-        .split(area);
+    let rects = split_rects(*dir, children.len(), area);
 
     let div_style = Style::default().fg(Color::DarkGray);
     for rect in rects.iter().skip(1) {
         match dir {
             SplitDir::Vertical => {
                 let x = rect.x.saturating_sub(1);
-                for y in area.y..area.y + area.height {
-                    frame
-                        .render_widget(Paragraph::new("│").style(div_style), Rect::new(x, y, 1, 1));
-                }
+                let column = vec![Line::from("│"); area.height as usize];
+                frame.render_widget(
+                    Paragraph::new(column).style(div_style),
+                    Rect::new(x, area.y, 1, area.height),
+                );
             }
             SplitDir::Horizontal => {
                 let y = rect.y.saturating_sub(1);
@@ -182,24 +168,27 @@ fn draw_dividers(frame: &mut Frame, layout: &PaneLayout, area: Rect) {
         }
     }
 
-    for (child, rect) in children.iter().zip(rects.iter()) {
-        draw_dividers(frame, child, *rect);
+    for (child, rect) in children.iter().zip(rects) {
+        draw_dividers(frame, child, rect);
     }
 }
 
 // ── Directory browser renderer ─────────────────────────────────────────────────
 
+/// Style for a row of a selectable overlay list.
+fn list_row_style(base: Style, selected: bool) -> Style {
+    if selected {
+        base.bg(Color::White).fg(Color::Black)
+    } else {
+        base
+    }
+}
+
 fn render_browse(frame: &mut Frame, app: &mut App, area: Rect) {
     const HEADER_ROWS: usize = 2; // path line + blank line
 
     let list_height = (area.height as usize).saturating_sub(HEADER_ROWS);
-    if list_height > 0 {
-        if app.browse_selected < app.browse_scroll {
-            app.browse_scroll = app.browse_selected;
-        } else if app.browse_selected >= app.browse_scroll + list_height {
-            app.browse_scroll = app.browse_selected - list_height + 1;
-        }
-    }
+    scroll_into_view(&mut app.browse_scroll, app.browse_selected, list_height);
 
     let header = Line::from(Span::styled(
         app.browse_dir.display().to_string(),
@@ -215,27 +204,20 @@ fn render_browse(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        let end = (app.browse_scroll + list_height).min(app.browse_entries.len());
-        for (i, entry) in app.browse_entries[app.browse_scroll..end]
+        let rows = app
+            .browse_entries
             .iter()
             .enumerate()
-        {
-            let idx = app.browse_scroll + i;
-            let selected = idx == app.browse_selected;
-            let label = if entry.is_dir {
-                format!("{}/", entry.name)
+            .skip(app.browse_scroll)
+            .take(list_height);
+        for (idx, entry) in rows {
+            let (label, base) = if entry.is_dir {
+                (format!("{}/", entry.name), Style::default().fg(Color::Cyan))
             } else {
-                entry.name.clone()
+                (entry.name.clone(), Style::default())
             };
-            let mut style = if entry.is_dir {
-                Style::default().fg(Color::Cyan)
-            } else {
-                Style::default()
-            };
-            if selected {
-                style = style.bg(Color::White).fg(Color::Black);
-            }
-            lines.push(Line::from(Span::styled(format!(" {} ", label), style)));
+            let style = list_row_style(base, idx == app.browse_selected);
+            lines.push(Line::from(Span::styled(format!(" {label} "), style)));
         }
     }
 
@@ -246,13 +228,7 @@ fn render_buffer_list(frame: &mut Frame, app: &mut App, area: Rect) {
     const HEADER_ROWS: usize = 2; // title line + blank line
 
     let list_height = (area.height as usize).saturating_sub(HEADER_ROWS);
-    if list_height > 0 {
-        if app.buf_list_selected < app.buf_list_scroll {
-            app.buf_list_scroll = app.buf_list_selected;
-        } else if app.buf_list_selected >= app.buf_list_scroll + list_height {
-            app.buf_list_scroll = app.buf_list_selected - list_height + 1;
-        }
-    }
+    scroll_into_view(&mut app.buf_list_scroll, app.buf_list_selected, list_height);
 
     let header = Line::from(Span::styled(
         "Buffers  (RET open, d kill, Esc cancel)",
@@ -261,7 +237,7 @@ fn render_buffer_list(frame: &mut Frame, app: &mut App, area: Rect) {
             .add_modifier(Modifier::BOLD),
     ));
 
-    let active_path = app.pane().file_path.clone();
+    let active_path = app.pane().file_path.as_deref();
     let mut lines: Vec<Line> = vec![header, Line::default()];
     if app.buffers.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -269,22 +245,23 @@ fn render_buffer_list(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        let end = (app.buf_list_scroll + list_height).min(app.buffers.len());
-        for (i, path) in app.buffers[app.buf_list_scroll..end].iter().enumerate() {
-            let idx = app.buf_list_scroll + i;
-            let selected = idx == app.buf_list_selected;
-            let is_active = active_path.as_deref() == Some(path.as_path());
+        let rows = app
+            .buffers
+            .iter()
+            .enumerate()
+            .skip(app.buf_list_scroll)
+            .take(list_height);
+        for (idx, path) in rows {
+            let is_active = active_path == Some(path.as_path());
             let marker = if is_active { "* " } else { "  " };
-            let mut style = if is_active {
+            let base = if is_active {
                 Style::default().fg(Color::Cyan)
             } else {
                 Style::default()
             };
-            if selected {
-                style = style.bg(Color::White).fg(Color::Black);
-            }
+            let style = list_row_style(base, idx == app.buf_list_selected);
             lines.push(Line::from(Span::styled(
-                format!(" {}{} ", marker, path.display()),
+                format!(" {marker}{} ", path.display()),
                 style,
             )));
         }
@@ -299,7 +276,7 @@ fn render_pane(
     frame: &mut Frame,
     pane: &mut Pane,
     area: Rect,
-    pane_ctx: &PaneRenderCtx<'_>,
+    pane_ctx: &PaneRenderCtx,
     search: &SearchView<'_>,
 ) {
     let is_active = pane_ctx.is_active;
@@ -325,11 +302,11 @@ fn render_pane(
         .map(|row| {
             let status = pane.git_diff.get(row).copied().unwrap_or_default();
             let (ch, style) = match status {
-                LineStatus::Added => ('+', Style::default().fg(Color::Green)),
-                LineStatus::Modified => ('~', Style::default().fg(Color::Yellow)),
-                LineStatus::Unchanged => (' ', Style::default()),
+                LineStatus::Added => ("+", Style::default().fg(Color::Green)),
+                LineStatus::Modified => ("~", Style::default().fg(Color::Yellow)),
+                LineStatus::Unchanged => (" ", Style::default()),
             };
-            Line::from(Span::styled(ch.to_string(), style))
+            Line::from(Span::styled(ch, style))
         })
         .collect();
     frame.render_widget(Paragraph::new(gutter_lines), gutter_area);
@@ -339,18 +316,19 @@ fn render_pane(
         .map(|row| match pane.lines.get(row) {
             None => Line::default(),
             Some(line) => {
-                let row_search: Vec<(usize, usize, bool)> = search
-                    .matches
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(mi, &(r, c))| {
-                        if r == row && search.query_len > 0 {
-                            Some((c, search.query_len, search.current_idx == Some(mi)))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                // Matches are sorted by (row, col): binary-search this row's run.
+                let lo = search.matches.partition_point(|&(r, _)| r < row);
+                let hi = lo + search.matches[lo..].partition_point(|&(r, _)| r == row);
+                let row_search: Vec<(usize, usize, bool)> = if search.query_len > 0 {
+                    (lo..hi)
+                        .map(|mi| {
+                            let col = search.matches[mi].1;
+                            (col, search.query_len, search.current_idx == Some(mi))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let ctx = LineCtx {
                     cursor_row: pane.cursor_row,
                     cursor_col: pane.cursor_col,
@@ -389,10 +367,11 @@ fn build_line(line: &str, row: usize, ctx: &LineCtx<'_>) -> Line<'static> {
     let (chars, base) = if ctx.conceal_links {
         conceal_links(line)
     } else {
-        (line.chars().collect(), org_styles(line))
+        let chars: Vec<char> = line.chars().collect();
+        let styles = org_styles(&chars);
+        (chars, styles)
     };
-    let n = chars.len();
-    let effective_n = n.max(1); // show at least a cursor cell on empty lines
+    let effective_n = chars.len().max(1); // show at least a cursor cell on empty lines
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
@@ -400,9 +379,7 @@ fn build_line(line: &str, row: usize, ctx: &LineCtx<'_>) -> Line<'static> {
 
     for i in 0..effective_n {
         let ch = chars.get(i).copied().unwrap_or(' ');
-        let base_style = base.get(i).copied().unwrap_or_default();
-
-        let mut style = base_style;
+        let mut style = base.get(i).copied().unwrap_or_default();
 
         // Visual selection overlay
         if ctx.is_active {
@@ -414,15 +391,16 @@ fn build_line(line: &str, row: usize, ctx: &LineCtx<'_>) -> Line<'static> {
         }
 
         // Search highlight overlay
-        for &(col_start, len, is_current) in ctx.search_spans {
-            if i >= col_start && i < col_start + len {
-                if is_current {
-                    style = Style::default().bg(Color::Yellow).fg(Color::Black);
-                } else {
-                    style = Style::default().bg(Color::Rgb(80, 60, 0)).fg(Color::White);
-                }
-                break;
-            }
+        if let Some(&(_, _, is_current)) = ctx
+            .search_spans
+            .iter()
+            .find(|&&(start, len, _)| (start..start + len).contains(&i))
+        {
+            style = if is_current {
+                Style::default().bg(Color::Yellow).fg(Color::Black)
+            } else {
+                Style::default().bg(Color::Rgb(80, 60, 0)).fg(Color::White)
+            };
         }
 
         // Block cursor overlay (Normal / Command / Visual modes)
@@ -434,16 +412,13 @@ fn build_line(line: &str, row: usize, ctx: &LineCtx<'_>) -> Line<'static> {
             style = Style::default().bg(Color::White).fg(Color::Black);
         }
 
-        if style == cur_style {
-            buf.push(ch);
-        } else {
+        if style != cur_style {
             if !buf.is_empty() {
-                spans.push(Span::styled(buf.clone(), cur_style));
-                buf.clear();
+                spans.push(Span::styled(std::mem::take(&mut buf), cur_style));
             }
-            buf.push(ch);
             cur_style = style;
         }
+        buf.push(ch);
     }
     if !buf.is_empty() {
         spans.push(Span::styled(buf, cur_style));
@@ -482,8 +457,7 @@ fn in_selection(
 // ── Org-mode syntax styles ────────────────────────────────────────────────────
 
 /// Return a per-character style array for one source line.
-fn org_styles(line: &str) -> Vec<Style> {
-    let chars: Vec<char> = line.chars().collect();
+fn org_styles(chars: &[char]) -> Vec<Style> {
     let n = chars.len();
     let mut styles = vec![Style::default(); n];
     if n == 0 {
@@ -493,29 +467,29 @@ fn org_styles(line: &str) -> Vec<Style> {
     // ── Heading ──────────────────────────────────────────────────────────────
     let star_count = chars.iter().take_while(|&&c| c == '*').count();
     if star_count > 0 && chars.get(star_count) == Some(&' ') {
-        style_heading(&chars, &mut styles, star_count);
+        style_heading(chars, &mut styles, star_count);
         return styles;
     }
 
     // ── #+keyword lines ───────────────────────────────────────────────────────
-    if line.starts_with("#+") {
-        let s = Style::default().fg(Color::DarkGray);
-        styles.iter_mut().for_each(|st| *st = s);
+    if chars.starts_with(&['#', '+']) {
+        styles.fill(Style::default().fg(Color::DarkGray));
         return styles;
     }
 
     // ── Drawer / property lines ───────────────────────────────────────────────
-    if line.starts_with(':') {
-        let s = Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::ITALIC);
-        styles.iter_mut().for_each(|st| *st = s);
+    if chars[0] == ':' {
+        styles.fill(
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        );
         return styles;
     }
 
     // ── Inline markup ─────────────────────────────────────────────────────────
-    apply_link_styles(&chars, &mut styles);
-    apply_strikethrough(&chars, &mut styles);
+    apply_link_styles(chars, &mut styles);
+    apply_strikethrough(chars, &mut styles);
 
     // ── List bullets & checkboxes ─────────────────────────────────────────────
     if let Some(first_non_space) = chars.iter().position(|&c| c != ' ') {
@@ -526,15 +500,14 @@ fn org_styles(line: &str) -> Vec<Style> {
             // Checkbox: "- [ ] " / "- [X] " / "- [-] "
             let cb_start = first_non_space + 2;
             if chars.get(cb_start) == Some(&'[') && chars.get(cb_start + 2) == Some(&']') {
-                let state_char = chars.get(cb_start + 1).copied();
-                let cb_style = match state_char {
-                    Some('X') | Some('x') => Style::default()
+                let cb_style = match chars.get(cb_start + 1) {
+                    Some('X' | 'x') => Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                     Some('-') => Style::default().fg(Color::Yellow),
                     _ => Style::default().fg(Color::DarkGray),
                 };
-                styles[cb_start..=(cb_start + 2).min(n.saturating_sub(1))].fill(cb_style);
+                styles[cb_start..=(cb_start + 2).min(n - 1)].fill(cb_style);
             }
         }
     }
@@ -547,77 +520,17 @@ fn org_styles(line: &str) -> Vec<Style> {
 /// Bracket delimiters and the URL are dimmed; the description (or bare URL)
 /// is rendered cyan + underlined so it stands out as a clickable reference.
 fn apply_link_styles(chars: &[char], styles: &mut [Style]) {
-    let n = chars.len();
     let dim = Style::default().fg(Color::DarkGray);
-    let url_style = Style::default().fg(Color::DarkGray);
     let desc_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::UNDERLINED);
 
-    let mut i = 0;
-    while i + 1 < n {
-        // Find opening "[["
-        if chars[i] != '[' || chars[i + 1] != '[' {
-            i += 1;
-            continue;
-        }
-        let link_start = i;
-        i += 2; // skip "[["
-
-        // Collect URL until ']' or end
-        let url_start = i;
-        while i < n && chars[i] != ']' {
-            i += 1;
-        }
-        if i >= n {
-            break;
-        }
-        let url_end = i; // points at ']'
-
-        i += 1; // skip first ']'
-        if i >= n {
-            break;
-        }
-
-        if chars[i] == ']' {
-            // Form: [[url]]
-            let link_end = i; // points at closing ']'
-                              // Style: "[[" dim, url = desc_style, "]]" dim
-            styles[link_start] = dim;
-            styles[link_start + 1] = dim;
-            styles[url_start..url_end].fill(desc_style);
-            styles[url_end] = dim;
-            styles[link_end] = dim;
-            i += 1;
-        } else if chars[i] == '[' {
-            // Form: [[url][desc]]
-            let sep_open = i; // '['
-            i += 1;
-            let desc_start = i;
-            while i < n && chars[i] != ']' {
-                i += 1;
-            }
-            if i >= n {
-                break;
-            }
-            let desc_end = i; // first ']' of "]]"
-            i += 1;
-            if i >= n || chars[i] != ']' {
-                continue;
-            }
-            let link_end = i;
-
-            // Style: "[[" dim, url dim, "][" dim, desc cyan+underline, "]]" dim
-            styles[link_start] = dim;
-            styles[link_start + 1] = dim;
-            styles[url_start..url_end].fill(url_style);
-            styles[url_end] = dim; // ']' before '['
-            styles[sep_open] = dim; // '['
-            styles[desc_start..desc_end].fill(desc_style);
-            styles[desc_end] = dim;
-            styles[link_end] = dim;
-            i += 1;
-        }
+    for link in links::find_links(chars, '[', ']') {
+        // The visible text: the description, or the URL itself when bare.
+        let text = link.desc.clone().unwrap_or_else(|| link.url.clone());
+        styles[link.start..text.start].fill(dim);
+        styles[text.clone()].fill(desc_style);
+        styles[text.end..=link.end].fill(dim);
     }
 }
 
@@ -626,75 +539,27 @@ fn apply_link_styles(chars: &[char], styles: &mut [Style]) {
 /// `url`. All other styling (headings, strikethrough, etc.) is unaffected.
 fn conceal_links(line: &str) -> (Vec<char>, Vec<Style>) {
     let chars: Vec<char> = line.chars().collect();
-    let styles = org_styles(line);
-    let n = chars.len();
+    let styles = org_styles(&chars);
 
-    // Ranges of source-char indices to drop from the display (brackets, "][", URL).
-    let mut drop: Vec<(usize, usize)> = Vec::new();
-
-    let mut i = 0;
-    while i + 1 < n {
-        if chars[i] != '[' || chars[i + 1] != '[' {
-            i += 1;
-            continue;
-        }
-        let link_start = i;
-        i += 2;
-        let url_start = i;
-        while i < n && chars[i] != ']' {
-            i += 1;
-        }
-        if i >= n {
-            break;
-        }
-        let url_end = i;
-        i += 1;
-        if i >= n {
-            break;
-        }
-
-        if chars[i] == ']' {
-            // [[url]] — drop "[[" and "]]", keep url text.
-            drop.push((link_start, url_start));
-            drop.push((url_end, i + 1));
-            i += 1;
-        } else if chars[i] == '[' {
-            // [[url][desc]] — drop everything but desc text.
-            i += 1;
-            let desc_start = i;
-            while i < n && chars[i] != ']' {
-                i += 1;
-            }
-            if i >= n {
-                break;
-            }
-            let desc_end = i;
-            i += 1;
-            if i >= n || chars[i] != ']' {
-                continue;
-            }
-            drop.push((link_start, desc_start));
-            drop.push((desc_end, i + 1));
-            i += 1;
-        }
-    }
-
-    if drop.is_empty() {
+    let found = links::find_links(&chars, '[', ']');
+    if found.is_empty() {
         return (chars, styles);
     }
 
-    let mut out_chars = Vec::with_capacity(n);
-    let mut out_styles = Vec::with_capacity(n);
-    'outer: for idx in 0..n {
-        for &(start, end) in &drop {
-            if idx >= start && idx < end {
-                continue 'outer;
-            }
-        }
-        out_chars.push(chars[idx]);
-        out_styles.push(styles[idx]);
+    // Drop everything around the visible text: brackets, "][" and the URL.
+    let mut keep = vec![true; chars.len()];
+    for link in &found {
+        let text = link.desc.clone().unwrap_or_else(|| link.url.clone());
+        keep[link.start..text.start].fill(false);
+        keep[text.end..=link.end].fill(false);
     }
-    (out_chars, out_styles)
+
+    chars
+        .into_iter()
+        .zip(styles)
+        .zip(keep)
+        .filter_map(|(cs, k)| k.then_some(cs))
+        .unzip()
 }
 
 /// Apply `CROSSED_OUT` styling to `+text+` spans in a line.
@@ -716,19 +581,12 @@ fn apply_strikethrough(chars: &[char], styles: &mut [Style]) {
             continue;
         }
         // Search for closing '+'
-        let mut j = content_start + 1;
-        let mut found = false;
-        while j < n {
-            if chars[j] == '+' && !chars[j - 1].is_whitespace() {
-                let post_ok = j + 1 >= n || !chars[j + 1].is_alphanumeric();
-                if post_ok {
-                    found = true;
-                    break;
-                }
-            }
-            j += 1;
-        }
-        if found {
+        let close = (content_start + 1..n).find(|&j| {
+            chars[j] == '+'
+                && !chars[j - 1].is_whitespace()
+                && chars.get(j + 1).is_none_or(|c| !c.is_alphanumeric())
+        });
+        if let Some(j) = close {
             let strike_style = Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::CROSSED_OUT);
@@ -768,9 +626,11 @@ fn style_heading(chars: &[char], styles: &mut [Style], star_count: usize) {
         ("CANCELLED", Color::DarkGray, false),
     ];
     for &(kw, color, bold) in KEYWORDS {
-        let kw_chars: Vec<char> = kw.chars().collect();
-        let kw_len = kw_chars.len();
-        if pos + kw_len <= n && chars[pos..pos + kw_len] == kw_chars[..] {
+        let kw_len = kw.len(); // ASCII, so bytes == chars
+        let matches_kw = chars
+            .get(pos..pos + kw_len)
+            .is_some_and(|w| kw.chars().eq(w.iter().copied()));
+        if matches_kw {
             let next = chars.get(pos + kw_len).copied();
             if next == Some(' ') || next.is_none() {
                 let mut kw_style = Style::default().fg(color);
@@ -790,8 +650,7 @@ fn style_heading(chars: &[char], styles: &mut [Style], star_count: usize) {
 
     // Priority [#A] / [#B] / [#C]
     if pos + 4 <= n && chars[pos] == '[' && chars[pos + 1] == '#' && chars[pos + 3] == ']' {
-        let p = chars[pos + 2];
-        let pri_color = match p {
+        let pri_color = match chars[pos + 2] {
             'A' => Color::LightRed,
             'B' => Color::LightYellow,
             'C' => Color::LightGreen,
@@ -815,65 +674,41 @@ fn style_heading(chars: &[char], styles: &mut [Style], star_count: usize) {
     styles[tag_start..n].fill(dim);
 }
 
-/// Find the char index of the ':' that opens the trailing tag section,
-/// or `chars.len()` if there are no tags.
+/// Find the char index of the ':' that opens the trailing tag section
+/// (`:foo:bar:` at the end of a heading), or `chars.len()` if there are none.
+/// Only colons after `from` (the start of the title) can open the section.
 fn find_tags_char_col(chars: &[char], from: usize) -> usize {
     let n = chars.len();
-    if n == 0 || chars[n - 1] != ':' {
+    if chars.last() != Some(&':') {
         return n;
     }
-    // Walk backwards: collect tag segments between colons
-    let mut pos = n - 1; // position of last ':'
+    // `close` is a ':' ending a tag; walk left one tag at a time.
+    let mut close = n - 1;
     loop {
-        let colon_pos = pos;
-        if colon_pos == 0 {
+        if close == 0 {
             return n;
         }
-        pos -= 1;
-        let seg_end = colon_pos;
-        // Scan tag chars backward
-        let mut seg_start = colon_pos;
-        while seg_start > 0 && is_tag_char(chars[seg_start - 1]) {
-            seg_start -= 1;
-        }
-        let tag = &chars[seg_start..seg_end];
-        if tag.is_empty() {
+        let seg_start = chars[..close]
+            .iter()
+            .rposition(|&c| !is_tag_char(c))
+            .map_or(0, |p| p + 1);
+        // Empty tag, or the tag starts inside the title/keyword/priority.
+        if seg_start == close || seg_start <= from {
             return n;
         }
-        if seg_start <= from {
+        // The tag must be preceded by the ':' that separates/opens it.
+        if chars[seg_start - 1] != ':' {
             return n;
         }
-        let before_tag = chars[seg_start - 1];
-        if before_tag == ' ' || before_tag == '\t' {
-            // The ':' at seg_start - 1 is the opening of the tag section
-            // But wait: seg_start - 1 is a space, not a colon.
-            // In ":foo:bar:", the opening ':' would be right before "foo".
-            // Hmm, let me trace: "Title :foo:bar:"
-            //   chars[...] has space at some position, then ':' at seg_start
-            //   but seg_start is the start of tag text, not the colon...
-            // This means `seg_start` is at 'f' of "foo", and chars[seg_start-1]
-            // should be ':' for a valid tag.
-            return n; // space before tag text, not a colon — invalid
-        }
-        if before_tag == ':' {
-            // seg_start - 1 is a ':' → valid tag separator, keep walking
-            let _ = pos; // suppress unused assignment warning
-            pos = seg_start - 1;
-            // Check what is before this ':'
-            if pos == 0 {
-                return n;
-            }
-            let before_colon = chars[pos - 1];
-            if before_colon == ' ' || before_colon == '\t' || pos - 1 < from {
-                // Found the opening ':' of the whole tag section
-                if pos > from {
-                    return pos;
-                }
-                return n;
-            }
-        } else {
+        let open = seg_start - 1;
+        if open == 0 {
             return n;
         }
+        // Whitespace before the colon (or the title boundary) opens the section.
+        if matches!(chars[open - 1], ' ' | '\t') || open - 1 < from {
+            return if open > from { open } else { n };
+        }
+        close = open;
     }
 }
 
@@ -894,36 +729,14 @@ fn heading_color(level: usize) -> Color {
 // ── Status bar ────────────────────────────────────────────────────────────────
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let mode_style = match app.mode {
-        Mode::Normal => Style::default()
-            .bg(Color::Blue)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-        Mode::Insert => Style::default()
-            .bg(Color::Green)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD),
-        Mode::Command => Style::default()
-            .bg(Color::Yellow)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD),
-        Mode::Search => Style::default()
-            .bg(Color::Cyan)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD),
-        Mode::Visual { .. } => Style::default()
-            .bg(Color::Magenta)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-        Mode::Browse => Style::default()
-            .bg(Color::Cyan)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD),
-        Mode::BufferList => Style::default()
-            .bg(Color::Cyan)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD),
+    let (bg, fg) = match app.mode {
+        Mode::Normal => (Color::Blue, Color::White),
+        Mode::Insert => (Color::Green, Color::Black),
+        Mode::Command => (Color::Yellow, Color::Black),
+        Mode::Visual { .. } => (Color::Magenta, Color::White),
+        Mode::Search | Mode::Browse | Mode::BufferList => (Color::Cyan, Color::Black),
     };
+    let mode_style = Style::default().bg(bg).fg(fg).add_modifier(Modifier::BOLD);
 
     let pane = app.pane();
     let mode_span = Span::styled(format!(" {} ", app.mode.label()), mode_style);
@@ -942,7 +755,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let file_span = Span::styled(
-        format!(" {}{}{} ", file_name, modified, split_indicator),
+        format!(" {file_name}{modified}{split_indicator} "),
         Style::default().fg(Color::White),
     );
 
@@ -969,11 +782,7 @@ fn render_cmdline(frame: &mut Frame, app: &App, area: Rect) {
                 format!("/{} ({}/{})", app.search_buf, app.search_match_idx + 1, n)
             }
         }
-        _ => app
-            .message
-            .as_deref()
-            .map(|m| m.to_string())
-            .unwrap_or_default(),
+        _ => app.message.clone().unwrap_or_default(),
     };
     let widget = Paragraph::new(text).style(Style::default().fg(Color::White));
     frame.render_widget(widget, area);
@@ -983,24 +792,47 @@ fn render_cmdline(frame: &mut Frame, app: &App, area: Rect) {
 mod tests {
     use super::*;
 
+    fn concealed(line: &str) -> String {
+        conceal_links(line).0.into_iter().collect()
+    }
+
+    fn tag_col(line: &str) -> usize {
+        let chars: Vec<char> = line.chars().collect();
+        find_tags_char_col(&chars, 2)
+    }
+
     #[test]
     fn conceal_links_shows_description_only() {
-        let (chars, _) = conceal_links("see [[https://example.com][the docs]] here");
-        let s: String = chars.into_iter().collect();
-        assert_eq!(s, "see the docs here");
+        assert_eq!(
+            concealed("see [[https://example.com][the docs]] here"),
+            "see the docs here"
+        );
     }
 
     #[test]
     fn conceal_links_shows_bare_url_when_no_description() {
-        let (chars, _) = conceal_links("see [[https://example.com]] here");
-        let s: String = chars.into_iter().collect();
-        assert_eq!(s, "see https://example.com here");
+        assert_eq!(
+            concealed("see [[https://example.com]] here"),
+            "see https://example.com here"
+        );
     }
 
     #[test]
     fn conceal_links_leaves_plain_text_untouched() {
-        let (chars, _) = conceal_links("no links here");
-        let s: String = chars.into_iter().collect();
-        assert_eq!(s, "no links here");
+        assert_eq!(concealed("no links here"), "no links here");
+    }
+
+    #[test]
+    fn conceal_links_keeps_styles_aligned_with_chars() {
+        let (chars, styles) = conceal_links("a [[u][d]] b [[x]]");
+        assert_eq!(chars.len(), styles.len());
+    }
+
+    #[test]
+    fn tags_found_at_end_of_heading() {
+        assert_eq!(tag_col("* Title :foo:bar:"), 8);
+        assert_eq!(tag_col("* Title"), "* Title".len());
+        assert_eq!(tag_col("* Title :foo"), "* Title :foo".len());
+        assert_eq!(tag_col("* Title foo:bar:"), "* Title foo:bar:".len());
     }
 }

@@ -1,13 +1,13 @@
 pub mod app;
 pub mod git;
 pub mod keymap;
+mod links;
 pub mod pane;
 pub mod ui;
 
 pub use app::App;
 
 use std::io;
-use std::time::Duration;
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
@@ -23,12 +23,12 @@ pub fn run(file_path: Option<&str>) -> anyhow::Result<()> {
     loop {
         terminal.draw(|f| ui::render(f, &mut app))?;
 
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) => app.handle_key(key),
-                Event::Mouse(mouse) => app.handle_mouse(mouse),
-                _ => {}
-            }
+        // Block until something happens; there are no timers, so redrawing on
+        // an idle poll would only burn CPU (and re-run the git diff).
+        match event::read()? {
+            Event::Key(key) => app.handle_key(key),
+            Event::Mouse(mouse) => app.handle_mouse(mouse),
+            _ => {}
         }
 
         if app.should_quit {

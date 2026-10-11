@@ -39,6 +39,13 @@ pub enum LineToken {
     Text(String),
 }
 
+/// ASCII case-insensitive `starts_with` that doesn't allocate.
+fn has_prefix_ignore_case(s: &str, prefix: &str) -> bool {
+    s.as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+}
+
 /// Classify a single source line.
 pub fn tokenize_line(line: &str) -> LineToken {
     if line.trim().is_empty() {
@@ -60,7 +67,7 @@ pub fn tokenize_line(line: &str) -> LineToken {
     // ── #+… lines ────────────────────────────────────────────────────────────
     if let Some(rest) = line.strip_prefix("#+") {
         // #+begin_KIND [PARAMS]  — no colon; split by first whitespace
-        if rest.to_lowercase().starts_with("begin_") {
+        if has_prefix_ignore_case(rest, "begin_") {
             let after = &rest["begin_".len()..]; // e.g. "src rust"
             let kind_len = after
                 .find(|c: char| c.is_ascii_whitespace())
@@ -71,7 +78,7 @@ pub fn tokenize_line(line: &str) -> LineToken {
         }
 
         // #+end_KIND
-        if rest.to_lowercase().starts_with("end_") {
+        if has_prefix_ignore_case(rest, "end_") {
             let after = &rest["end_".len()..];
             let kind_len = after
                 .find(|c: char| c.is_ascii_whitespace() || c == ':')
@@ -109,46 +116,44 @@ pub fn tokenize_line(line: &str) -> LineToken {
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
             {
-                if after.is_empty() {
-                    return LineToken::DrawerBegin(name.to_string());
+                return if after.is_empty() {
+                    LineToken::DrawerBegin(name.to_string())
                 } else {
-                    return LineToken::DrawerProperty {
+                    LineToken::DrawerProperty {
                         key: name.to_string(),
                         value: after.to_string(),
-                    };
-                }
+                    }
+                };
             }
         }
     }
 
     // ── Horizontal rule: 5+ dashes ────────────────────────────────────────────
-    {
-        let t = line.trim();
-        if t.len() >= 5 && t.chars().all(|c| c == '-') {
-            return LineToken::HorizontalRule;
-        }
+    let t = line.trim();
+    if t.len() >= 5 && t.bytes().all(|b| b == b'-') {
+        return LineToken::HorizontalRule;
     }
 
     // ── List items ────────────────────────────────────────────────────────────
     let indent = line.len() - line.trim_start().len();
     let tail = &line[indent..];
 
-    if let Some(rest) = tail.strip_prefix("- ").or_else(|| tail.strip_prefix("+ ")) {
-        let bullet = if tail.starts_with("- ") { "-" } else { "+" };
-        return LineToken::ListItem {
-            indent,
-            bullet: bullet.to_string(),
-            rest: rest.to_string(),
-        };
-    }
-    // Ordered list: "1. ", "2. ", …
-    let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if !digits.is_empty() {
-        let after_digits = &tail[digits.len()..];
-        if let Some(rest) = after_digits.strip_prefix(". ") {
+    for bullet in ["-", "+"] {
+        if let Some(rest) = tail.strip_prefix(bullet).and_then(|r| r.strip_prefix(' ')) {
             return LineToken::ListItem {
                 indent,
-                bullet: format!("{}.", digits),
+                bullet: bullet.to_string(),
+                rest: rest.to_string(),
+            };
+        }
+    }
+    // Ordered list: "1. ", "2. ", …
+    let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+    if digits > 0 {
+        if let Some(rest) = tail[digits..].strip_prefix(". ") {
+            return LineToken::ListItem {
+                indent,
+                bullet: format!("{}.", &tail[..digits]),
                 rest: rest.to_string(),
             };
         }

@@ -1,6 +1,20 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::git::{self, LineStatus};
+use crate::links;
+
+/// Shift `offset` the minimum amount needed so `pos` lies in
+/// `offset..offset + size`. No-op when `size` is zero.
+pub(crate) fn scroll_into_view(offset: &mut usize, pos: usize, size: usize) {
+    if size == 0 {
+        return;
+    }
+    if pos < *offset {
+        *offset = pos;
+    } else if pos >= *offset + size {
+        *offset = pos + 1 - size;
+    }
+}
 
 /// One editor pane: its own buffer, cursor, and viewport.
 pub struct Pane {
@@ -21,28 +35,21 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn from_file(path: &str) -> anyhow::Result<Self> {
+    pub fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let path = path.as_ref();
         let content = std::fs::read_to_string(path)?;
-        let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
-        let lines = if lines.is_empty() {
-            vec![String::new()]
-        } else {
-            lines
-        };
-        let file_path = PathBuf::from(path);
-        let head_lines = git::get_head_lines(&file_path);
-        let git_diff = git::diff_with_head(head_lines.as_ref(), &lines);
+        let mut lines: Vec<String> = content.lines().map(str::to_owned).collect();
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        let head_lines = git::get_head_lines(path);
+        let git_diff = git::diff_with_head(head_lines.as_deref(), &lines);
         Ok(Self {
             lines,
-            cursor_row: 0,
-            cursor_col: 0,
-            viewport_top: 0,
-            viewport_left: 0,
-            file_path: Some(file_path),
-            modified: false,
+            file_path: Some(path.to_path_buf()),
             git_diff,
             head_lines,
-            undo_stack: Vec::new(),
+            ..Self::empty()
         })
     }
 
@@ -64,13 +71,13 @@ impl Pane {
     /// Re-diff the current buffer against HEAD. Called from the render loop so
     /// the gutter updates in real-time as the user types.
     pub fn recompute_git_diff(&mut self) {
-        self.git_diff = git::diff_with_head(self.head_lines.as_ref(), &self.lines);
+        self.git_diff = git::diff_with_head(self.head_lines.as_deref(), &self.lines);
     }
 
     /// Re-fetch HEAD content from git (called after a successful save so that
     /// a subsequent commit will reset the baseline correctly).
     fn refresh_head_lines(&mut self) {
-        if let Some(path) = &self.file_path.clone() {
+        if let Some(path) = &self.file_path {
             self.head_lines = git::get_head_lines(path);
         }
     }
@@ -78,10 +85,7 @@ impl Pane {
     // ── Geometry ──────────────────────────────────────────────────────────────
 
     pub fn current_line_len(&self) -> usize {
-        self.lines
-            .get(self.cursor_row)
-            .map(|l| l.len())
-            .unwrap_or(0)
+        self.lines.get(self.cursor_row).map_or(0, String::len)
     }
 
     pub fn clamp_col(&mut self) {
@@ -91,20 +95,8 @@ impl Pane {
 
     /// Keep the cursor inside the visible viewport (vertical and horizontal).
     pub fn scroll_to_cursor(&mut self, height: usize, width: usize) {
-        if height > 0 {
-            if self.cursor_row < self.viewport_top {
-                self.viewport_top = self.cursor_row;
-            } else if self.cursor_row >= self.viewport_top + height {
-                self.viewport_top = self.cursor_row - height + 1;
-            }
-        }
-        if width > 0 {
-            if self.cursor_col < self.viewport_left {
-                self.viewport_left = self.cursor_col;
-            } else if self.cursor_col >= self.viewport_left + width {
-                self.viewport_left = self.cursor_col - width + 1;
-            }
-        }
+        scroll_into_view(&mut self.viewport_top, self.cursor_row, height);
+        scroll_into_view(&mut self.viewport_left, self.cursor_col, width);
     }
 
     pub fn scroll_down(&mut self, n: usize) {
@@ -274,28 +266,18 @@ impl Pane {
         }
 
         // Multi-line: keep prefix of start line and suffix of end line
-        let start_prefix = self.lines[sr][..sc].to_string();
-        let end_suffix = if ec + 1 < self.lines[er].len() {
-            self.lines[er][ec + 1..].to_string()
-        } else {
-            String::new()
-        };
+        let end_line = &self.lines[er];
+        let end_suffix = end_line.get(ec + 1..).unwrap_or_default();
+        let joined = format!("{}{}", &self.lines[sr][..sc], end_suffix);
 
         // Collect removed text
-        let mut removed: Vec<String> = Vec::new();
+        let mut removed: Vec<String> = Vec::with_capacity(er - sr + 1);
         removed.push(self.lines[sr][sc..].to_string());
-        for row in sr + 1..er {
-            removed.push(self.lines[row].clone());
-        }
-        removed.push(self.lines[er][..=ec.min(self.lines[er].len().saturating_sub(1))].to_string());
+        removed.extend(self.lines[sr + 1..er].iter().cloned());
+        removed.push(end_line[..=ec.min(end_line.len().saturating_sub(1))].to_string());
 
-        // Remove lines sr..=er and replace with joined result
-        self.lines.drain(sr..=er);
-        self.lines
-            .insert(sr, format!("{}{}", start_prefix, end_suffix));
-        if self.lines.is_empty() {
-            self.lines.push(String::new());
-        }
+        // Replace lines sr..=er with the joined result
+        self.lines.splice(sr..=er, [joined]);
         self.cursor_row = sr;
         self.cursor_col = sc.min(self.lines[sr].len().saturating_sub(1));
         self.modified = true;
@@ -315,18 +297,16 @@ impl Pane {
     pub fn paste_lines_after(&mut self, lines: &[String]) {
         self.snapshot();
         let insert_at = self.cursor_row + 1;
-        for (i, l) in lines.iter().enumerate() {
-            self.lines.insert(insert_at + i, l.clone());
-        }
+        self.lines
+            .splice(insert_at..insert_at, lines.iter().cloned());
         self.cursor_row = insert_at;
         self.modified = true;
     }
 
     pub fn paste_lines_before(&mut self, lines: &[String]) {
         self.snapshot();
-        for (i, l) in lines.iter().enumerate() {
-            self.lines.insert(self.cursor_row + i, l.clone());
-        }
+        let at = self.cursor_row;
+        self.lines.splice(at..at, lines.iter().cloned());
         self.modified = true;
     }
 
@@ -339,22 +319,20 @@ impl Pane {
 
     /// Delete the character under the cursor (vim `x`).
     pub fn delete_char_at_cursor(&mut self) {
-        self.snapshot();
-        let line = &mut self.lines[self.cursor_row];
-        if line.is_empty() {
+        if self.lines[self.cursor_row].is_empty() {
             return;
         }
-        let col = self.cursor_col.min(line.len().saturating_sub(1));
+        self.snapshot();
+        let line = &mut self.lines[self.cursor_row];
+        let col = self.cursor_col.min(line.len() - 1);
         line.remove(col);
-        self.cursor_col = col.min(self.lines[self.cursor_row].len().saturating_sub(1));
+        self.cursor_col = col.min(line.len().saturating_sub(1));
         self.modified = true;
     }
 
     /// Delete from cursor to end of current word (vim `dw`).
     pub fn delete_word(&mut self) {
-        self.snapshot();
-        let line = &self.lines[self.cursor_row];
-        let bytes = line.as_bytes();
+        let bytes = self.lines[self.cursor_row].as_bytes();
         let col = self.cursor_col;
         if col >= bytes.len() {
             return;
@@ -367,18 +345,23 @@ impl Pane {
         while end < bytes.len() && bytes[end].is_ascii_whitespace() {
             end += 1;
         }
-        self.lines[self.cursor_row].replace_range(col..end, "");
-        self.cursor_col = col.min(self.lines[self.cursor_row].len().saturating_sub(1));
+        self.snapshot();
+        let line = &mut self.lines[self.cursor_row];
+        line.replace_range(col..end, "");
+        self.cursor_col = col.min(line.len().saturating_sub(1));
         self.modified = true;
     }
 
     pub fn delete_char_before(&mut self) {
+        if self.cursor_col == 0 && self.cursor_row == 0 {
+            return;
+        }
         self.snapshot();
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
             self.lines[self.cursor_row].remove(self.cursor_col);
             self.modified = true;
-        } else if self.cursor_row > 0 {
+        } else {
             let current = self.lines.remove(self.cursor_row);
             self.cursor_row -= 1;
             self.cursor_col = self.lines[self.cursor_row].len();
@@ -418,57 +401,10 @@ impl Pane {
     pub fn link_at_cursor(&self) -> Option<String> {
         let line = self.lines.get(self.cursor_row)?;
         let col = self.cursor_col;
-        let b = line.as_bytes();
-        let n = b.len();
-        let mut i = 0;
-        while i + 1 < n {
-            if b[i] != b'[' || b[i + 1] != b'[' {
-                i += 1;
-                continue;
-            }
-            let link_start = i;
-            i += 2;
-            let url_start = i;
-            while i < n && b[i] != b']' {
-                i += 1;
-            }
-            if i >= n {
-                break;
-            }
-            let url_end = i;
-            let url = line[url_start..url_end].to_string();
-            i += 1; // skip ']'
-            if i >= n {
-                break;
-            }
-            let link_end = if b[i] == b']' {
-                // [[url]]
-                let end = i;
-                i += 1;
-                end
-            } else if b[i] == b'[' {
-                i += 1;
-                while i < n && b[i] != b']' {
-                    i += 1;
-                }
-                if i >= n {
-                    break;
-                }
-                i += 1; // skip ']'
-                if i >= n || b[i] != b']' {
-                    continue;
-                }
-                let end = i;
-                i += 1;
-                end
-            } else {
-                continue;
-            };
-            if col >= link_start && col <= link_end {
-                return Some(url);
-            }
-        }
-        None
+        links::find_links(line.as_bytes(), b'[', b']')
+            .into_iter()
+            .find(|l| (l.start..=l.end).contains(&col))
+            .map(|l| line[l.url].to_string())
     }
 
     /// Toggle the checkbox on the current line if it is a list item with one.
@@ -506,19 +442,15 @@ impl Pane {
     // ── Persistence ───────────────────────────────────────────────────────────
 
     pub fn save(&mut self) -> Result<String, String> {
-        match &self.file_path.clone() {
-            None => Err("No file name — use :w <filename>".into()),
-            Some(path) => {
-                let content = self.lines.join("\n") + "\n";
-                std::fs::write(path, &content)
-                    .map(|_| {
-                        self.modified = false;
-                        self.refresh_head_lines();
-                        format!("\"{}\" written", path.display())
-                    })
-                    .map_err(|e| format!("Error writing: {}", e))
-            }
-        }
+        let Some(path) = &self.file_path else {
+            return Err("No file name — use :w <filename>".into());
+        };
+        let content = self.lines.join("\n") + "\n";
+        std::fs::write(path, content).map_err(|e| format!("Error writing: {e}"))?;
+        let msg = format!("\"{}\" written", path.display());
+        self.modified = false;
+        self.refresh_head_lines();
+        Ok(msg)
     }
 }
 
@@ -572,7 +504,7 @@ mod tests {
 
     #[test]
     fn move_line_end_then_scroll_keeps_cursor_visible() {
-        let mut p = pane_with_line(&"hello world this is a long line of text");
+        let mut p = pane_with_line("hello world this is a long line of text");
         let width = 10;
         p.move_line_end();
         p.scroll_to_cursor(5, width);
