@@ -64,6 +64,11 @@ cln                   # open file picker in current directory
 | ~C-r~     | redo                          |
 | ~Tab~     | fold heading (cycle)          |
 | ~S-Tab~   | fold all (cycle)              |
+| ~M-h M-l~ | promote / demote heading (~SPC m h/l~) |
+| ~M-H M-L~ | promote / demote subtree (~SPC m H/L~) |
+| ~M-j M-k~ | move subtree down / up (~SPC m j/k~)   |
+| ~S-← S-→~ | cycle TODO keyword (~SPC m t/T~)       |
+| ~RET~     | in insert mode: continue list item     |
 | ~:w~      | save                          |
 | ~:q~      | quit                          |
 | ~:wq~     | save and quit                 |

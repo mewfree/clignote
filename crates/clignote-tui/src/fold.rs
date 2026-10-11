@@ -149,6 +149,26 @@ impl Folds {
             .collect();
     }
 
+    /// Account for two adjacent blocks `s..m` and `m..e` swapping places.
+    pub fn blocks_swapped(&mut self, s: usize, m: usize, e: usize) {
+        if self.marks.is_empty() {
+            return;
+        }
+        self.marks = std::mem::take(&mut self.marks)
+            .into_iter()
+            .map(|(r, k)| {
+                let r = if (s..m).contains(&r) {
+                    r + (e - m)
+                } else if (m..e).contains(&r) {
+                    r - (m - s)
+                } else {
+                    r
+                };
+                (r, k)
+            })
+            .collect();
+    }
+
     pub fn clear(&mut self) {
         self.marks.clear();
     }

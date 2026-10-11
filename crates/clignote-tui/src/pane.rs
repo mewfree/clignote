@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::fold::{self, Folds};
 use crate::git::{self, LineStatus};
 use crate::links;
+use crate::structure::{self, StructureOp};
 
 /// Shift `offset` the minimum amount needed so `pos` lies in
 /// `offset..offset + size`. No-op when `size` is zero.
@@ -557,8 +558,29 @@ impl Pane {
         }
     }
 
+    /// Insert a line break at the cursor. On a list item this continues the
+    /// list (bullet, next number, fresh checkbox); on an empty item it ends it.
     pub fn insert_newline(&mut self) {
         self.snapshot_insert();
+        if let Some(cont) = structure::list_continuation(&self.lines[self.cursor_row]) {
+            let line_len = self.lines[self.cursor_row].len();
+            if cont.empty && self.cursor_col >= line_len {
+                self.lines[self.cursor_row].clear();
+                self.cursor_col = 0;
+                self.modified = true;
+                return;
+            }
+            if self.cursor_col >= cont.own_len {
+                let rest = self.lines[self.cursor_row].split_off(self.cursor_col);
+                self.cursor_row += 1;
+                self.cursor_col = cont.next_prefix.len();
+                self.lines
+                    .insert(self.cursor_row, format!("{}{rest}", cont.next_prefix));
+                self.folds.lines_inserted(self.cursor_row, 1);
+                self.modified = true;
+                return;
+            }
+        }
         let rest = self.lines[self.cursor_row].split_off(self.cursor_col);
         self.cursor_row += 1;
         self.lines.insert(self.cursor_row, rest);
@@ -570,11 +592,15 @@ impl Pane {
     pub fn open_line_below(&mut self) {
         self.snapshot();
         self.insert_open = true;
+        let prefix = structure::list_continuation(&self.lines[self.cursor_row])
+            .filter(|c| !c.empty)
+            .map(|c| c.next_prefix)
+            .unwrap_or_default();
         let at = self.row_after(self.cursor_row);
-        self.lines.insert(at, String::new());
+        self.cursor_col = prefix.len();
+        self.lines.insert(at, prefix);
         self.folds.lines_inserted(at, 1);
         self.cursor_row = at;
-        self.cursor_col = 0;
         self.modified = true;
     }
 
@@ -585,6 +611,78 @@ impl Pane {
         self.lines.insert(self.cursor_row, String::new());
         self.cursor_col = 0;
         self.modified = true;
+    }
+
+    // ── Org structure editing ─────────────────────────────────────────────────
+
+    /// Apply a structural command to the heading owning the cursor. Returns a
+    /// status message on success, or why it could not be applied.
+    pub fn apply_structure(&mut self, op: StructureOp) -> Result<&'static str, &'static str> {
+        let row = structure::heading_row(&self.lines, self.cursor_row).ok_or("Not in a heading")?;
+        match op {
+            StructureOp::Promote | StructureOp::Demote => {
+                let promote = op == StructureOp::Promote;
+                let new = structure::shift_level(&self.lines[row], promote)
+                    .ok_or("Already at top level")?;
+                self.snapshot();
+                self.lines[row] = new;
+                if row == self.cursor_row {
+                    self.cursor_col = if promote {
+                        self.cursor_col.saturating_sub(1)
+                    } else {
+                        self.cursor_col + 1
+                    };
+                }
+                self.modified = true;
+                Ok(if promote { "Promoted" } else { "Demoted" })
+            }
+            StructureOp::PromoteSubtree | StructureOp::DemoteSubtree => {
+                let promote = op == StructureOp::PromoteSubtree;
+                let end = fold::subtree_end(&self.lines, row);
+                let shifted: Option<Vec<(usize, String)>> = (row..end)
+                    .filter(|&r| fold::heading_level(&self.lines[r]).is_some())
+                    .map(|r| structure::shift_level(&self.lines[r], promote).map(|l| (r, l)))
+                    .collect();
+                let shifted = shifted.ok_or("Already at top level")?;
+                self.snapshot();
+                for (r, line) in shifted {
+                    self.lines[r] = line;
+                }
+                self.clamp_col();
+                self.modified = true;
+                Ok(if promote {
+                    "Promoted subtree"
+                } else {
+                    "Demoted subtree"
+                })
+            }
+            StructureOp::MoveUp | StructureOp::MoveDown => {
+                let down = op == StructureOp::MoveDown;
+                let mv = structure::plan_move(&self.lines, row, down)?;
+                self.snapshot();
+                let first_len = mv.mid - mv.start;
+                self.lines[mv.start..mv.end].rotate_left(first_len);
+                self.folds.blocks_swapped(mv.start, mv.mid, mv.end);
+                // The cursor travels with the subtree being moved.
+                self.cursor_row = if down {
+                    self.cursor_row + (mv.end - mv.mid)
+                } else {
+                    self.cursor_row - (mv.mid - mv.start)
+                };
+                self.modified = true;
+                Ok(if down { "Moved down" } else { "Moved up" })
+            }
+            StructureOp::TodoNext | StructureOp::TodoPrev => {
+                let forward = op == StructureOp::TodoNext;
+                let new =
+                    structure::cycle_todo(&self.lines[row], forward).ok_or("Not in a heading")?;
+                self.snapshot();
+                self.lines[row] = new;
+                self.clamp_col();
+                self.modified = true;
+                Ok("TODO state changed")
+            }
+        }
     }
 
     // ── Org-mode helpers ──────────────────────────────────────────────────────
@@ -726,6 +824,93 @@ mod tests {
         p.cycle_fold();
         p.undo();
         assert!(p.fold_ranges().is_empty());
+    }
+
+    #[test]
+    fn promote_and_demote_heading_only() {
+        let mut p = pane_with_doc("** A\n*** A1\nbody");
+        p.cursor_row = 2; // body belongs to A1
+        assert_eq!(p.apply_structure(StructureOp::Demote), Ok("Demoted"));
+        assert_eq!(p.lines, vec!["** A", "**** A1", "body"]);
+        assert_eq!(p.apply_structure(StructureOp::Promote), Ok("Promoted"));
+        assert_eq!(p.lines[1], "*** A1");
+    }
+
+    #[test]
+    fn subtree_promote_refuses_at_top_level() {
+        let mut p = pane_with_doc("* A\n** A1");
+        assert!(p.apply_structure(StructureOp::PromoteSubtree).is_err());
+        assert_eq!(p.lines, vec!["* A", "** A1"]);
+        assert!(p.apply_structure(StructureOp::DemoteSubtree).is_ok());
+        assert_eq!(p.lines, vec!["** A", "*** A1"]);
+    }
+
+    #[test]
+    fn move_subtree_down_and_up_keeps_cursor_on_it() {
+        let mut p = pane_with_doc("* A\na\n* B\nb");
+        p.cursor_row = 1; // in A
+        assert_eq!(p.apply_structure(StructureOp::MoveDown), Ok("Moved down"));
+        assert_eq!(p.lines, vec!["* B", "b", "* A", "a"]);
+        assert_eq!(p.cursor_row, 3);
+        assert_eq!(p.apply_structure(StructureOp::MoveUp), Ok("Moved up"));
+        assert_eq!(p.lines, vec!["* A", "a", "* B", "b"]);
+        assert_eq!(p.cursor_row, 1);
+        assert!(p.apply_structure(StructureOp::MoveUp).is_err());
+    }
+
+    #[test]
+    fn moving_a_subtree_carries_its_fold() {
+        let mut p = pane_with_doc("* A\na\n* B\nb");
+        p.cycle_fold(); // fold A
+        p.apply_structure(StructureOp::MoveDown).unwrap();
+        assert_eq!(p.fold_ranges(), vec![3..4]); // A now at row 2
+    }
+
+    #[test]
+    fn todo_cycle_on_heading() {
+        let mut p = pane_with_doc("* Task\nbody");
+        p.cursor_row = 1;
+        p.apply_structure(StructureOp::TodoNext).unwrap();
+        assert_eq!(p.lines[0], "* TODO Task");
+        p.apply_structure(StructureOp::TodoPrev).unwrap();
+        assert_eq!(p.lines[0], "* Task");
+    }
+
+    #[test]
+    fn structure_outside_heading_is_an_error() {
+        let mut p = pane_with_doc("preamble\n* A");
+        assert_eq!(
+            p.apply_structure(StructureOp::Promote),
+            Err("Not in a heading")
+        );
+    }
+
+    #[test]
+    fn enter_continues_list_items() {
+        let mut p = pane_with_doc("- [X] first");
+        p.cursor_col = p.lines[0].len();
+        p.insert_newline();
+        assert_eq!(p.lines, vec!["- [X] first", "- [ ] "]);
+        assert_eq!((p.cursor_row, p.cursor_col), (1, 6));
+        // Enter on the now-empty item ends the list.
+        p.insert_newline();
+        assert_eq!(p.lines, vec!["- [X] first", ""]);
+    }
+
+    #[test]
+    fn enter_numbers_ordered_lists_and_splits_text() {
+        let mut p = pane_with_doc("1. ab");
+        p.cursor_col = 4; // between a and b
+        p.insert_newline();
+        assert_eq!(p.lines, vec!["1. a", "2. b"]);
+    }
+
+    #[test]
+    fn open_line_below_continues_list() {
+        let mut p = pane_with_doc("  - item");
+        p.open_line_below();
+        assert_eq!(p.lines[1], "  - ");
+        assert_eq!(p.cursor_col, 4);
     }
 
     fn type_str(p: &mut Pane, s: &str) {

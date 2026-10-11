@@ -5,6 +5,7 @@ use ratatui::layout::{Position, Rect};
 
 use crate::keymap::{self, Action, MatchResult, PaneDir};
 use crate::pane::Pane;
+use crate::structure::StructureOp;
 
 // ── Tab completion ────────────────────────────────────────────────────────────
 
@@ -445,8 +446,37 @@ impl App {
         true
     }
 
+    /// Run an org structural command and report the outcome in the cmdline.
+    fn structure_edit(&mut self, op: StructureOp) {
+        let result = self.pane_mut().apply_structure(op);
+        self.message = Some(result.unwrap_or_else(|e| e).to_string());
+    }
+
+    /// `M-h/l/j/k` (and `M-←/→`) edit headings, `M-H/L` whole subtrees,
+    /// `S-←/→` cycle the TODO keyword. Returns whether `key` was one of these.
+    fn structure_key(&mut self, key: KeyEvent) -> bool {
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let op = match key.code {
+            KeyCode::Char('h') | KeyCode::Left if alt => StructureOp::Promote,
+            KeyCode::Char('l') | KeyCode::Right if alt => StructureOp::Demote,
+            KeyCode::Char('H') if alt => StructureOp::PromoteSubtree,
+            KeyCode::Char('L') if alt => StructureOp::DemoteSubtree,
+            KeyCode::Char('k') | KeyCode::Up if alt => StructureOp::MoveUp,
+            KeyCode::Char('j') | KeyCode::Down if alt => StructureOp::MoveDown,
+            KeyCode::Right if shift => StructureOp::TodoNext,
+            KeyCode::Left if shift => StructureOp::TodoPrev,
+            _ => return false,
+        };
+        self.structure_edit(op);
+        true
+    }
+
     /// Handle single-key normal-mode bindings (not part of a multi-key sequence).
     fn handle_single_normal(&mut self, key: KeyEvent) {
+        if self.structure_key(key) {
+            return;
+        }
         if self.apply_motion(key) {
             return;
         }
@@ -580,6 +610,7 @@ impl App {
             Action::NextBuffer => self.cycle_buffer(1),
             Action::PrevBuffer => self.cycle_buffer(-1),
             Action::KillBuffer => self.kill_current_buffer(),
+            Action::Structure(op) => self.structure_edit(op),
         }
     }
 

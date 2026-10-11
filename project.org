@@ -65,7 +65,7 @@
 *** editing & structure (TUI-first)
 
 ** DONE folding / cycling visibility of headings (Tab, S-Tab)
-** TODO TODO keyword cycling (S-<right> / S-<left>)
+** DONE TODO keyword cycling (S-<right> / S-<left>)
 ** TODO priority set / cycle ([#A] [#B] [#C])
 ** TODO tag editing and auto-completion
 ** TODO checkboxes and plain-list toggle ([ ] ↔ [X]; list item cycling)

@@ -4,6 +4,7 @@ pub mod git;
 pub mod keymap;
 mod links;
 pub mod pane;
+pub mod structure;
 pub mod ui;
 
 pub use app::App;

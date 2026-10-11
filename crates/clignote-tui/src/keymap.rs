@@ -1,5 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::structure::StructureOp;
+
 // ── Action ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +30,8 @@ pub enum Action {
     NextBuffer,
     PrevBuffer,
     KillBuffer,
+    /// Org heading / TODO editing (`SPC m …`, `M-h/j/k/l`).
+    Structure(StructureOp),
 }
 
 // ── Sequence matching ─────────────────────────────────────────────────────────
@@ -76,12 +80,21 @@ fn exact_match(s: &str) -> Option<Action> {
         "SPC b n" => Some(Action::NextBuffer),
         "SPC b p" => Some(Action::PrevBuffer),
         "SPC b d" | "SPC b k" => Some(Action::KillBuffer),
+        // Org structure editing (Doom's `SPC m` local leader)
+        "SPC m h" => Some(Action::Structure(StructureOp::Promote)),
+        "SPC m l" => Some(Action::Structure(StructureOp::Demote)),
+        "SPC m H" => Some(Action::Structure(StructureOp::PromoteSubtree)),
+        "SPC m L" => Some(Action::Structure(StructureOp::DemoteSubtree)),
+        "SPC m k" => Some(Action::Structure(StructureOp::MoveUp)),
+        "SPC m j" => Some(Action::Structure(StructureOp::MoveDown)),
+        "SPC m t" => Some(Action::Structure(StructureOp::TodoNext)),
+        "SPC m T" => Some(Action::Structure(StructureOp::TodoPrev)),
         _ => None,
     }
 }
 
 const KNOWN_PREFIXES: &[&str] = &[
-    "g", "d", "y", "C-w", "SPC", "SPC f", "SPC w", "SPC b", "SPC q", "SPC t",
+    "g", "d", "y", "C-w", "SPC", "SPC f", "SPC w", "SPC b", "SPC m", "SPC q", "SPC t",
 ];
 
 pub fn match_seq(seq_str: &str) -> MatchResult {
@@ -102,7 +115,8 @@ pub fn hint_for_prefix(prefix: &str) -> &'static str {
         "d" => "d: delete line  w: delete word",
         "y" => "y: yank line",
         "C-w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
-        "SPC" => "f: file  w: window  b: buffer  q: quit  t: toggle",
+        "SPC" => "f: file  w: window  b: buffer  m: org  q: quit  t: toggle",
+        "SPC m" => "h/l: promote/demote  H/L: subtree  j/k: move  t/T: TODO",
         "SPC f" => "s: save",
         "SPC w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
         "SPC b" => "b: list  n: next  p: prev  d/k: kill",
@@ -117,7 +131,9 @@ pub fn hint_for_prefix(prefix: &str) -> &'static str {
 /// Produce a canonical string representation of a key event.
 pub fn key_to_str(k: &KeyEvent) -> String {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = k.modifiers.contains(KeyModifiers::ALT);
     match k.code {
+        KeyCode::Char(c) if alt => format!("M-{c}"),
         KeyCode::Char(' ') if !ctrl => "SPC".into(),
         KeyCode::Char(c) if ctrl => format!("C-{c}"),
         KeyCode::Char(c) => c.to_string(),
