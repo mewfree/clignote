@@ -5,6 +5,9 @@
 //! [journal]
 //! dir = "~/notes/journal"
 //! file_format = "%Y-%m-%d"   # default "%Y%m%d"; ".org" is appended
+//!
+//! [editor]
+//! line_numbers = "relative"  # "off", "absolute" or "relative" (default)
 //! ```
 //!
 //! Environment overrides: `CLN_JOURNAL_DIR`.
@@ -15,11 +18,21 @@ use anyhow::Context;
 use clignote_core::journal::FileFormat;
 use serde::Deserialize;
 
+use crate::app::LineNumbers;
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     #[serde(default)]
     journal: RawJournal,
+    #[serde(default)]
+    editor: RawEditor,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEditor {
+    line_numbers: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -29,12 +42,24 @@ struct RawJournal {
     file_format: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// Directory holding daily journal files; `None` when no home is known.
     pub journal_dir: Option<PathBuf>,
     /// Pattern for daily journal file names.
     pub journal_file_format: FileFormat,
+    /// Initial line-number mode.
+    pub line_numbers: LineNumbers,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            journal_dir: None,
+            journal_file_format: FileFormat::default(),
+            line_numbers: LineNumbers::Relative,
+        }
+    }
 }
 
 /// Replace a leading `~` or `~/` with `home`.
@@ -54,9 +79,16 @@ impl Config {
             Some(p) => FileFormat::parse(&p).map_err(|e| anyhow::anyhow!(e))?,
             None => FileFormat::default(),
         };
+        let line_numbers = match raw.editor.line_numbers.as_deref() {
+            None => Self::default().line_numbers,
+            Some(v) => LineNumbers::parse(v).ok_or_else(|| {
+                anyhow::anyhow!("line_numbers must be \"off\", \"absolute\" or \"relative\"")
+            })?,
+        };
         Ok(Self {
             journal_dir: raw.journal.dir.map(|d| expand_tilde(&d, home)),
             journal_file_format,
+            line_numbers,
         })
     }
 
@@ -124,6 +156,14 @@ mod tests {
             FileFormat::parse("%Y-%m-%d").unwrap()
         );
         assert!(Config::parse("[journal]\nfile_format = \"%Y\"\n", None).is_err());
+    }
+
+    #[test]
+    fn line_numbers_default_relative_and_configurable() {
+        assert_eq!(Config::default().line_numbers, LineNumbers::Relative);
+        let c = Config::parse("[editor]\nline_numbers = \"off\"\n", None).unwrap();
+        assert_eq!(c.line_numbers, LineNumbers::Off);
+        assert!(Config::parse("[editor]\nline_numbers = \"x\"\n", None).is_err());
     }
 
     #[test]

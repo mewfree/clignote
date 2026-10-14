@@ -229,6 +229,15 @@ impl LineNumbers {
         }
     }
 
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Self::Off),
+            "absolute" => Some(Self::Absolute),
+            "relative" => Some(Self::Relative),
+            _ => None,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -367,7 +376,7 @@ impl App {
             conceal_links: true,
             wrap: true,
             indent: true,
-            line_numbers: LineNumbers::Off,
+            line_numbers: config.line_numbers,
             browse_dir: PathBuf::new(),
             browse_entries: Vec::new(),
             browse_selected: 0,

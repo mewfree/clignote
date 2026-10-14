@@ -955,6 +955,7 @@ mod tests {
 
     fn app_with(text: &str) -> App {
         let mut app = App::new(None).unwrap();
+        app.line_numbers = LineNumbers::Off;
         app.pane_mut().lines = text.lines().map(str::to_owned).collect();
         app
     }
