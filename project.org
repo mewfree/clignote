@@ -41,6 +41,8 @@
 ** DONE implement status bar (mode indicator, filename, cursor position)
 ** DONE implement file open from CLI argument
 ** TODO implement file picker / fuzzy open (SPC f f)
+  - also bind SPC SPC (Doom's find-file-in-project) to the same fuzzy picker
+  - fuzzy-match file paths under the cwd / project root; open on RET
 ** DONE handle unsaved changes prompt on quit
 ** DONE mouse click to move cursor
 ** DONE horizontal scroll when cursor moves past visible width ($, long lines)
