@@ -5,6 +5,8 @@
 //! [journal]
 //! dir = "~/notes/journal"
 //! file_format = "%Y-%m-%d"   # default "%Y%m%d"; ".org" is appended
+//! entry_level = 1            # 1 = "* 14:05", 2 = "** 14:05" (default 1)
+//! blank_line_above = true    # blank line before a new entry (default true)
 //!
 //! [editor]
 //! line_numbers = "relative"  # "off", "absolute" or "relative" (default)
@@ -40,6 +42,8 @@ struct RawEditor {
 struct RawJournal {
     dir: Option<String>,
     file_format: Option<String>,
+    entry_level: Option<usize>,
+    blank_line_above: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +52,10 @@ pub struct Config {
     pub journal_dir: Option<PathBuf>,
     /// Pattern for daily journal file names.
     pub journal_file_format: FileFormat,
+    /// Heading level (number of stars) of a new timed entry.
+    pub journal_entry_level: usize,
+    /// Whether a new entry is preceded by a blank line.
+    pub journal_blank_above: bool,
     /// Initial line-number mode.
     pub line_numbers: LineNumbers,
 }
@@ -57,6 +65,8 @@ impl Default for Config {
         Self {
             journal_dir: None,
             journal_file_format: FileFormat::default(),
+            journal_entry_level: 1,
+            journal_blank_above: true,
             line_numbers: LineNumbers::Relative,
         }
     }
@@ -79,8 +89,14 @@ impl Config {
             Some(p) => FileFormat::parse(&p).map_err(|e| anyhow::anyhow!(e))?,
             None => FileFormat::default(),
         };
+        let defaults = Self::default();
+        let journal_entry_level = match raw.journal.entry_level {
+            None => defaults.journal_entry_level,
+            Some(n @ 1..=6) => n,
+            Some(_) => anyhow::bail!("entry_level must be between 1 and 6"),
+        };
         let line_numbers = match raw.editor.line_numbers.as_deref() {
-            None => Self::default().line_numbers,
+            None => defaults.line_numbers,
             Some(v) => LineNumbers::parse(v).ok_or_else(|| {
                 anyhow::anyhow!("line_numbers must be \"off\", \"absolute\" or \"relative\"")
             })?,
@@ -88,6 +104,11 @@ impl Config {
         Ok(Self {
             journal_dir: raw.journal.dir.map(|d| expand_tilde(&d, home)),
             journal_file_format,
+            journal_entry_level,
+            journal_blank_above: raw
+                .journal
+                .blank_line_above
+                .unwrap_or(defaults.journal_blank_above),
             line_numbers,
         })
     }
@@ -164,6 +185,20 @@ mod tests {
         let c = Config::parse("[editor]\nline_numbers = \"off\"\n", None).unwrap();
         assert_eq!(c.line_numbers, LineNumbers::Off);
         assert!(Config::parse("[editor]\nline_numbers = \"x\"\n", None).is_err());
+    }
+
+    #[test]
+    fn journal_entry_style_is_configurable() {
+        let d = Config::default();
+        assert_eq!((d.journal_entry_level, d.journal_blank_above), (1, true));
+        let c = Config::parse(
+            "[journal]\nentry_level = 2\nblank_line_above = false\n",
+            None,
+        )
+        .unwrap();
+        assert_eq!((c.journal_entry_level, c.journal_blank_above), (2, false));
+        assert!(Config::parse("[journal]\nentry_level = 0\n", None).is_err());
+        assert!(Config::parse("[journal]\nentry_level = 7\n", None).is_err());
     }
 
     #[test]
