@@ -256,6 +256,11 @@ pub struct App {
     /// Toggle with `SPC t w`.
     pub wrap: bool,
 
+    /// When true (default), body text under a heading is shown indented by
+    /// the heading's level. Display only; the buffer is untouched.
+    /// Toggle with `SPC t i`.
+    pub indent: bool,
+
     // Directory browser state (Mode::Browse)
     pub browse_dir: PathBuf,
     pub browse_entries: Vec<BrowseEntry>,
@@ -324,6 +329,7 @@ impl App {
             search_origin: (0, 0),
             conceal_links: true,
             wrap: true,
+            indent: true,
             browse_dir: PathBuf::new(),
             browse_entries: Vec::new(),
             browse_selected: 0,
@@ -608,6 +614,14 @@ impl App {
                     "Soft wrap: on".into()
                 } else {
                     "Soft wrap: off".into()
+                });
+            }
+            Action::ToggleIndent => {
+                self.indent = !self.indent;
+                self.message = Some(if self.indent {
+                    "Indent: on".into()
+                } else {
+                    "Indent: off".into()
                 });
             }
             Action::ToggleLinkConceal => {

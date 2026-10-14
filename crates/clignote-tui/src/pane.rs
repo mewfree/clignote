@@ -46,6 +46,8 @@ pub struct Pane {
     folds: Folds,
     /// Wrap geometry from the last render; `None` when not wrapping.
     wrap: Option<WrapState>,
+    /// Indent body text under headings (display only), set by the renderer.
+    indent: bool,
 }
 
 impl Pane {
@@ -83,6 +85,7 @@ impl Pane {
             insert_open: false,
             folds: Folds::default(),
             wrap: None,
+            indent: false,
         }
     }
 
@@ -132,6 +135,31 @@ impl Pane {
         self.wrap.is_some()
     }
 
+    /// Set by the renderer each frame: indent body text under headings.
+    pub fn set_indent(&mut self, on: bool) {
+        self.indent = on;
+    }
+
+    /// Display-only indent of buffer row `row`: body lines sit one column
+    /// deeper than the stars of the heading that owns them. Headings and text
+    /// before the first heading are flush left. Capped at half the wrap width
+    /// so deep trees never squeeze the text out.
+    pub fn row_indent(&self, row: usize) -> usize {
+        if !self.indent || fold::heading_level(&self.lines[row]).is_some() {
+            return 0;
+        }
+        let level = self.lines[..row]
+            .iter()
+            .rev()
+            .find_map(|l| fold::heading_level(l))
+            .unwrap_or(0);
+        let indent = if level == 0 { 0 } else { level + 1 };
+        match self.wrap {
+            Some(w) => indent.min(w.width / 2),
+            None => indent,
+        }
+    }
+
     /// Display-cell ranges of the screen rows that buffer row `row` occupies.
     /// A single range when not wrapping.
     pub fn row_segments(&self, row: usize) -> Vec<Range<usize>> {
@@ -148,7 +176,7 @@ impl Pane {
             chars.len().max(1)
         };
         chars.resize(cells, ' ');
-        wrap::segments(&chars, w.width)
+        wrap::segments(&chars, w.width - self.row_indent(row))
     }
 
     fn row_height(&self, row: usize) -> usize {
@@ -202,12 +230,15 @@ impl Pane {
         let layout = self.screen_layout(&ranges, y + 1);
         let last_row = self.lines.len().saturating_sub(1);
         let &(row, seg) = layout.get(y).or(layout.last()).unwrap_or(&(last_row, 0));
-        let start = if self.wrap.is_some() {
-            self.row_segments(row).get(seg).map_or(0, |r| r.start)
+        let indent = self.row_indent(row);
+        let col = if self.wrap.is_some() {
+            let start = self.row_segments(row).get(seg).map_or(0, |r| r.start);
+            start + x.saturating_sub(indent)
         } else {
-            self.viewport_left
+            // `viewport_left` is a screen offset, so it includes the indent.
+            (self.viewport_left + x).saturating_sub(indent)
         };
-        let col = (start + x).min(self.lines[row].len().saturating_sub(1));
+        let col = col.min(self.lines[row].len().saturating_sub(1));
         (row, col)
     }
 
@@ -286,7 +317,8 @@ impl Pane {
         if self.wrap.is_some() {
             self.viewport_left = 0;
         } else {
-            scroll_into_view(&mut self.viewport_left, self.cursor_col, width);
+            let col = self.cursor_col + self.row_indent(self.cursor_row);
+            scroll_into_view(&mut self.viewport_left, col, width);
         }
     }
 
@@ -1129,6 +1161,47 @@ mod tests {
             insert: true,
         }));
         assert_eq!(p.row_segments(0).len(), 2); // cursor cell wraps
+    }
+
+    fn indented(s: &str, width: usize) -> Pane {
+        let mut p = wrapped(s, width);
+        p.set_indent(true);
+        p
+    }
+
+    #[test]
+    fn body_is_indented_by_heading_level() {
+        let p = indented("intro\n* one\nbody\n** two\ndeep", 40);
+        let got: Vec<usize> = (0..5).map(|r| p.row_indent(r)).collect();
+        assert_eq!(got, vec![0, 0, 2, 0, 3]);
+    }
+
+    #[test]
+    fn indent_off_means_no_indent() {
+        let mut p = indented("* one\nbody", 40);
+        p.set_indent(false);
+        assert_eq!(p.row_indent(1), 0);
+    }
+
+    #[test]
+    fn indent_narrows_wrap_width() {
+        // Indent 2 leaves 8 cells: "aaaa " / "bbbb " / "cccc".
+        let p = indented("* h\naaaa bbbb cccc", 10);
+        assert_eq!(p.row_segments(1), vec![0..5, 5..10, 10..14]);
+    }
+
+    #[test]
+    fn indent_is_capped_at_half_the_width() {
+        let p = indented("********* h\nbody", 6);
+        assert_eq!(p.row_indent(1), 3);
+    }
+
+    #[test]
+    fn click_accounts_for_indent() {
+        let p = indented("* h\nbody", 40);
+        assert_eq!(p.pos_at_screen(2, 1), (1, 0));
+        assert_eq!(p.pos_at_screen(4, 1), (1, 2));
+        assert_eq!(p.pos_at_screen(0, 1), (1, 0)); // inside the indent
     }
 
     fn type_str(p: &mut Pane, s: &str) {

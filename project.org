@@ -45,6 +45,7 @@
 ** DONE mouse click to move cursor
 ** DONE horizontal scroll when cursor moves past visible width ($, long lines)
 ** DONE soft wrap long lines at word boundaries (j/k by screen row, SPC t w)
+** DONE indent body text under headings by level (display only, SPC t i)
 ** DONE window splitting (C-w s/v/w/q/hjkl, :sp, :vsplit, SPC w …)
 ** DONE space / doom-emacs leader keybindings (SPC f s, SPC w …, SPC q q)
 ** DONE which-key hint in cmdline after prefix keys

@@ -21,6 +21,8 @@ struct PaneRenderCtx {
     conceal_links: bool,
     /// Soft-wrap long lines instead of scrolling horizontally.
     wrap: bool,
+    /// Indent body text under headings.
+    indent: bool,
 }
 
 struct SearchView<'a> {
@@ -94,6 +96,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             mode: if is_active { app.mode } else { Mode::Normal },
             conceal_links: app.conceal_links,
             wrap: app.wrap,
+            indent: app.indent,
         };
         render_pane(
             frame,
@@ -304,6 +307,7 @@ fn render_pane(
         conceal_links: pane_ctx.conceal_links,
         insert: insert_here,
     }));
+    pane.set_indent(pane_ctx.indent);
     pane.scroll_to_cursor(height, width);
     pane.recompute_git_diff();
 
@@ -351,10 +355,14 @@ fn render_pane(
         };
 
         let status = pane.git_diff.get(row).copied().unwrap_or_default();
+        let indent = pane.row_indent(row);
         for &(_, seg) in &layout[i..i + run_len] {
             let range = segs.get(seg).cloned().unwrap_or(0..0);
             let (start, end) = (range.start.min(cells.len()), range.end.min(cells.len()));
             let mut line = Line::from(spans_from(&cells[start..end]));
+            if indent > 0 {
+                line.spans.insert(0, Span::raw(" ".repeat(indent)));
+            }
             if seg + 1 == segs.len() && Pane::is_fold_start(&fold_ranges, row) {
                 line.spans
                     .push(Span::styled(" […]", Style::default().fg(Color::DarkGray)));
@@ -382,6 +390,7 @@ fn render_pane(
 
     // Terminal cursor position (for blinking cursor in Insert)
     if is_active {
+        let indent = pane.row_indent(pane.cursor_row);
         let (seg, seg_start) = if wrapping {
             let segs = pane.row_segments(pane.cursor_row);
             let seg = segs
@@ -390,11 +399,16 @@ fn render_pane(
                 .unwrap_or(segs.len() - 1);
             (seg, segs[seg].start)
         } else {
-            (0, pane.viewport_left)
+            (0, pane.viewport_left.saturating_sub(indent))
         };
         if let Some(offset) = layout.iter().position(|&e| e == (pane.cursor_row, seg)) {
             let screen_row = content_area.y + offset as u16;
-            let screen_col = content_area.x + pane.cursor_col.saturating_sub(seg_start) as u16;
+            let col = if wrapping {
+                indent + pane.cursor_col.saturating_sub(seg_start)
+            } else {
+                (indent + pane.cursor_col).saturating_sub(pane.viewport_left)
+            };
+            let screen_col = content_area.x + col as u16;
             frame.set_cursor_position((screen_col, screen_row));
         }
     }
@@ -927,6 +941,45 @@ mod tests {
         app.pane_mut().cursor_col = 12;
         let (_, cursor) = draw(&mut app, 11, 6);
         // col 12 is the 3rd char of the second segment ("cccc dddd" starts at 10).
+        assert_eq!(cursor, Some((3, 1)));
+    }
+
+    #[test]
+    fn body_under_heading_is_indented_and_wraps_narrower() {
+        let mut app = app_with("* H\naaaa bbbb cccc");
+        // 1 gutter + 10 content; body indent 2 leaves 8 cells per row.
+        let (rows, _) = draw(&mut app, 11, 6);
+        assert_eq!(rows[0].trim_end(), "* H");
+        assert_eq!(rows[1].trim_end(), "  aaaa");
+        assert_eq!(rows[2].trim_end(), "  bbbb");
+        assert_eq!(rows[3].trim_end(), "  cccc");
+    }
+
+    #[test]
+    fn indent_toggle_off_renders_flush_left() {
+        let mut app = app_with("* H\nbody");
+        app.indent = false;
+        let (rows, _) = draw(&mut app, 20, 4);
+        assert_eq!(rows[1].trim_end(), "body");
+    }
+
+    #[test]
+    fn cursor_is_shifted_by_indent() {
+        let mut app = app_with("* H\nbody");
+        app.pane_mut().cursor_row = 1;
+        app.pane_mut().cursor_col = 1;
+        let (_, cursor) = draw(&mut app, 20, 4);
+        // gutter 1 + indent 2 + col 1
+        assert_eq!(cursor, Some((4, 1)));
+    }
+
+    #[test]
+    fn indent_applies_without_wrap() {
+        let mut app = app_with("* H\nbody");
+        app.wrap = false;
+        app.pane_mut().cursor_row = 1;
+        let (rows, cursor) = draw(&mut app, 20, 4);
+        assert_eq!(rows[1].trim_end(), "  body");
         assert_eq!(cursor, Some((3, 1)));
     }
 

@@ -70,6 +70,7 @@ cln                   # open file picker in current directory
 | ~S-← S-→~ | cycle TODO keyword (~SPC m t/T~)       |
 | ~RET~     | in insert mode: continue list item     |
 | ~SPC t w~ | toggle soft wrap (on by default)       |
+| ~SPC t i~ | toggle body indent under headings (on by default) |
 | ~:w~      | save                          |
 | ~:q~      | quit                          |
 | ~:wq~     | save and quit                 |
