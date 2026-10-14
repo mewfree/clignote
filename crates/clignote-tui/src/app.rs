@@ -1154,10 +1154,6 @@ impl App {
         use chrono::{Datelike, Timelike};
         use clignote_core::journal::{timed_headline, Date};
 
-        if self.pane().modified {
-            self.message = Some("Unsaved changes — :w first".into());
-            return;
-        }
         let Some(dir) = self.config.journal_dir.clone() else {
             self.message = Some("Journal: set [journal] dir in config (no $HOME)".into());
             return;
@@ -1168,7 +1164,18 @@ impl App {
             return;
         };
         let path = dir.join(today.file_name(&self.config.journal_file_format));
-        let mut pane = if path.exists() {
+        let in_place = self.pane().file_path.as_deref() == Some(path.as_path());
+        if !in_place && self.pane().modified {
+            // Switching away would drop the edits, so write them out first.
+            if let Err(e) = self.panes[self.active_pane].save() {
+                self.message = Some(format!("Unsaved changes could not be saved: {e}"));
+                return;
+            }
+        }
+        let mut pane = if in_place {
+            // Already showing today's file: append to the live buffer.
+            std::mem::replace(&mut self.panes[self.active_pane], Pane::empty())
+        } else if path.exists() {
             match Pane::from_file(&path) {
                 Ok(p) => p,
                 Err(e) => {
