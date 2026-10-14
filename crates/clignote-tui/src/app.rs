@@ -1184,6 +1184,9 @@ impl App {
             Pane::new_file(path, vec![today.headline()])
         };
         if new_entry {
+            if pane.lines.last().is_some_and(|l| !l.trim().is_empty()) {
+                pane.append_line(String::new());
+            }
             pane.append_line(timed_headline(now.hour(), now.minute()));
         }
         self.install_pane(pane);

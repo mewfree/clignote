@@ -192,9 +192,9 @@ impl Date {
     }
 }
 
-/// Timed entry headline, e.g. `** 14:05 `, ready for the title to be typed.
+/// Timed entry headline, e.g. `* 14:05 `, ready for the title to be typed.
 pub fn timed_headline(hour: u32, minute: u32) -> String {
-    format!("** {hour:02}:{minute:02} ")
+    format!("* {hour:02}:{minute:02} ")
 }
 
 /// The date strictly after (`forward`) or before `current` in `dates`.
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn headlines() {
         assert_eq!(d(2026, 10, 14).headline(), "* Wednesday, 14 October 2026");
-        assert_eq!(timed_headline(9, 5), "** 09:05 ");
+        assert_eq!(timed_headline(9, 5), "* 09:05 ");
     }
 
     #[test]
