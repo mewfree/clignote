@@ -1141,7 +1141,11 @@ impl App {
     /// Journal date of the active pane's file, if it lives in the journal dir.
     fn current_journal_date(&self) -> Option<clignote_core::journal::Date> {
         let dir = self.config.journal_dir.as_ref()?;
-        journal::date_of_path(self.pane().file_path.as_ref()?, dir)
+        journal::date_of_path(
+            self.pane().file_path.as_ref()?,
+            dir,
+            &self.config.journal_file_format,
+        )
     }
 
     /// Open (or create) today's journal file. With `new_entry`, also start a
@@ -1163,7 +1167,7 @@ impl App {
             self.message = Some("Journal: cannot determine today's date".into());
             return;
         };
-        let path = dir.join(today.file_name());
+        let path = dir.join(today.file_name(&self.config.journal_file_format));
         let mut pane = if path.exists() {
             match Pane::from_file(&path) {
                 Ok(p) => p,
@@ -1196,9 +1200,12 @@ impl App {
             self.message = Some("Not in a journal file".into());
             return;
         };
-        let dates = journal::list_dates(&dir);
+        let dates = journal::list_dates(&dir, &self.config.journal_file_format);
         match clignote_core::journal::neighbor(&dates, current, forward) {
-            Some(date) => self.open_file(&dir.join(date.file_name()), false),
+            Some(date) => self.open_file(
+                &dir.join(date.file_name(&self.config.journal_file_format)),
+                false,
+            ),
             None => {
                 self.message = Some(
                     if forward {

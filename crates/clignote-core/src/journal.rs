@@ -28,6 +28,68 @@ const MONTHS: [&str; 12] = [
     "December",
 ];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Piece {
+    Year,
+    Month,
+    Day,
+    Lit(String),
+}
+
+/// Daily file-name pattern (without the `.org` extension), built from
+/// `%Y`, `%m`, `%d` and literal text; `%%` is a literal percent sign.
+/// It must contain each of year, month and day exactly once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileFormat(Vec<Piece>);
+
+impl FileFormat {
+    pub fn parse(pattern: &str) -> Result<Self, String> {
+        let mut pieces = Vec::new();
+        let mut lit = String::new();
+        let mut chars = pattern.chars();
+        while let Some(c) = chars.next() {
+            if c != '%' {
+                lit.push(c);
+                continue;
+            }
+            let piece = match chars.next() {
+                Some('Y') => Piece::Year,
+                Some('m') => Piece::Month,
+                Some('d') => Piece::Day,
+                Some('%') => {
+                    lit.push('%');
+                    continue;
+                }
+                other => {
+                    return Err(format!(
+                        "unsupported specifier %{} in file_format (use %Y %m %d)",
+                        other.map(String::from).unwrap_or_default()
+                    ))
+                }
+            };
+            if !lit.is_empty() {
+                pieces.push(Piece::Lit(std::mem::take(&mut lit)));
+            }
+            pieces.push(piece);
+        }
+        if !lit.is_empty() {
+            pieces.push(Piece::Lit(lit));
+        }
+        for want in [Piece::Year, Piece::Month, Piece::Day] {
+            if pieces.iter().filter(|p| **p == want).count() != 1 {
+                return Err("file_format must contain %Y, %m and %d exactly once".into());
+            }
+        }
+        Ok(Self(pieces))
+    }
+}
+
+impl Default for FileFormat {
+    fn default() -> Self {
+        Self(vec![Piece::Year, Piece::Month, Piece::Day])
+    }
+}
+
 /// A calendar day. Ordering is chronological.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Date {
@@ -74,22 +136,48 @@ impl Date {
         WEEKDAYS[idx as usize]
     }
 
-    /// Daily journal file name, `YYYYMMDD.org`.
-    pub fn file_name(self) -> String {
-        format!("{:04}{:02}{:02}.org", self.year, self.month, self.day)
+    /// Daily journal file name, e.g. `20260305.org` for the default format.
+    pub fn file_name(self, fmt: &FileFormat) -> String {
+        let mut out = String::new();
+        for piece in &fmt.0 {
+            match piece {
+                Piece::Year => out.push_str(&format!("{:04}", self.year)),
+                Piece::Month => out.push_str(&format!("{:02}", self.month)),
+                Piece::Day => out.push_str(&format!("{:02}", self.day)),
+                Piece::Lit(s) => out.push_str(s),
+            }
+        }
+        out.push_str(".org");
+        out
     }
 
     /// Inverse of [`Date::file_name`]; `None` for anything else.
-    pub fn from_file_name(name: &str) -> Option<Self> {
-        let stem = name.strip_suffix(".org")?;
-        if stem.len() != 8 || !stem.bytes().all(|b| b.is_ascii_digit()) {
+    pub fn from_file_name(name: &str, fmt: &FileFormat) -> Option<Self> {
+        let mut rest = name.strip_suffix(".org")?;
+        let (mut year, mut month, mut day) = (None, None, None);
+        for piece in &fmt.0 {
+            match piece {
+                Piece::Lit(s) => rest = rest.strip_prefix(s.as_str())?,
+                _ => {
+                    let width = if *piece == Piece::Year { 4 } else { 2 };
+                    let digits = rest.get(..width)?;
+                    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+                        return None;
+                    }
+                    let n: u32 = digits.parse().ok()?;
+                    rest = &rest[width..];
+                    match piece {
+                        Piece::Year => year = Some(n as i32),
+                        Piece::Month => month = Some(n),
+                        _ => day = Some(n),
+                    }
+                }
+            }
+        }
+        if !rest.is_empty() {
             return None;
         }
-        Self::new(
-            stem[0..4].parse().ok()?,
-            stem[4..6].parse().ok()?,
-            stem[6..8].parse().ok()?,
-        )
+        Self::new(year?, month?, day?)
     }
 
     /// Top-level day headline, e.g. `* Wednesday, 14 October 2026`.
@@ -146,11 +234,25 @@ mod tests {
     #[test]
     fn file_name_round_trip() {
         let date = d(2026, 3, 5);
-        assert_eq!(date.file_name(), "20260305.org");
-        assert_eq!(Date::from_file_name("20260305.org"), Some(date));
-        assert_eq!(Date::from_file_name("20260305.txt"), None);
-        assert_eq!(Date::from_file_name("notes.org"), None);
-        assert_eq!(Date::from_file_name("20261340.org"), None);
+        let f = FileFormat::default();
+        assert_eq!(date.file_name(&f), "20260305.org");
+        assert_eq!(Date::from_file_name("20260305.org", &f), Some(date));
+        assert_eq!(Date::from_file_name("20260305.txt", &f), None);
+        assert_eq!(Date::from_file_name("notes.org", &f), None);
+        assert_eq!(Date::from_file_name("20261340.org", &f), None);
+    }
+
+    #[test]
+    fn custom_file_format() {
+        let f = FileFormat::parse("%Y-%m-%d").unwrap();
+        let date = d(2026, 3, 5);
+        assert_eq!(date.file_name(&f), "2026-03-05.org");
+        assert_eq!(Date::from_file_name("2026-03-05.org", &f), Some(date));
+        assert_eq!(Date::from_file_name("20260305.org", &f), None);
+        assert_eq!(Date::from_file_name("2026-03-05-x.org", &f), None);
+        assert!(FileFormat::parse("%Y-%m").is_err());
+        assert!(FileFormat::parse("%Y-%m-%d-%d").is_err());
+        assert!(FileFormat::parse("%Y-%m-%H").is_err());
     }
 
     #[test]
