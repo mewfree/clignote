@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
+use crate::config::Config;
 use crate::journal;
 use crate::keymap::{self, Action, MatchResult, PaneDir};
 use crate::pane::Pane;
@@ -274,6 +275,8 @@ pub struct App {
     /// Selection state for Mode::BufferList.
     pub buf_list_selected: usize,
     pub buf_list_scroll: usize,
+    /// User configuration (file + environment).
+    config: Config,
 }
 
 fn is_web_url(url: &str) -> bool {
@@ -311,6 +314,7 @@ impl App {
             Some(p) => vec![p.clone()],
             None => Vec::new(),
         };
+        let (config, config_warning) = Config::load();
         let mut app = Self {
             mode: Mode::Normal,
             panes: vec![pane],
@@ -338,7 +342,9 @@ impl App {
             buffers,
             buf_list_selected: 0,
             buf_list_scroll: 0,
+            config,
         };
+        app.message = config_warning;
         if let Some(dir) = browse_target {
             app.enter_browse(&dir);
         }
@@ -1101,8 +1107,8 @@ impl App {
 
     /// Journal date of the active pane's file, if it lives in the journal dir.
     fn current_journal_date(&self) -> Option<clignote_core::journal::Date> {
-        let dir = journal::journal_dir()?;
-        journal::date_of_path(self.pane().file_path.as_ref()?, &dir)
+        let dir = self.config.journal_dir.as_ref()?;
+        journal::date_of_path(self.pane().file_path.as_ref()?, dir)
     }
 
     /// Open (or create) today's journal file. With `new_entry`, also start a
@@ -1115,8 +1121,8 @@ impl App {
             self.message = Some("Unsaved changes — :w first".into());
             return;
         }
-        let Some(dir) = journal::journal_dir() else {
-            self.message = Some("Journal: set CLN_JOURNAL_DIR (no $HOME)".into());
+        let Some(dir) = self.config.journal_dir.clone() else {
+            self.message = Some("Journal: set [journal] dir in config (no $HOME)".into());
             return;
         };
         let now = chrono::Local::now();
@@ -1151,7 +1157,8 @@ impl App {
 
     /// Open the next/previous existing journal day relative to the current file.
     fn journal_step(&mut self, forward: bool) {
-        let (Some(dir), Some(current)) = (journal::journal_dir(), self.current_journal_date())
+        let (Some(dir), Some(current)) =
+            (self.config.journal_dir.clone(), self.current_journal_date())
         else {
             self.message = Some("Not in a journal file".into());
             return;

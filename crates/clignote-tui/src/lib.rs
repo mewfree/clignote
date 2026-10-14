@@ -1,4 +1,5 @@
 pub mod app;
+pub mod config;
 pub mod fold;
 pub mod git;
 pub mod journal;

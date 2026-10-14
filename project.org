@@ -100,6 +100,7 @@
   - file_header template (string or simple format) for new files
   - extend_today_until hour (entries before N:00 count as previous day)
   - wire into cln config (env / config file / flags as appropriate)
+  - done so far: journal dir only (see config.rs)
 
 ** DONE resolve journal path for a given date (create dir if missing)
   - pure path logic in a journal module (prefer headless; TUI only opens)
@@ -119,7 +120,8 @@
   - SPC n j j / SPC j j — new entry today (both bound; done)
   - SPC n j t / SPC j t — open today's file, no new timed entry (done)
   - C-n / C-p — next/prev day, journal files only (done)
-  - journal dir via $CLN_JOURNAL_DIR (default ~/org/journal); real config file still TODO
+  - journal dir: [journal] dir in ~/.config/clignote/config.toml, $CLN_JOURNAL_DIR overrides, default ~/org/journal (done)
+  - TODO: file_format, date/time formats, file_type, file_header in config
   - SPC j d — open today's file without creating a new timed entry
   - SPC j n / SPC j p — next / previous journal file (by date)
   - :Journal [date] command for dated open/create (org-read-date style later)

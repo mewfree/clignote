@@ -1,18 +1,9 @@
 //! Journal directory handling for the TUI (the I/O half of org-journal
 //! support; date and file-name logic lives in `clignote_core::journal`).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use clignote_core::journal::Date;
-
-/// Journal directory: `$CLN_JOURNAL_DIR`, else `~/org/journal`.
-pub fn journal_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("CLN_JOURNAL_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    let home = std::env::var_os("HOME")?;
-    Some(Path::new(&home).join("org").join("journal"))
-}
 
 /// Dates of all daily journal files in `dir`, ascending.
 pub fn list_dates(dir: &Path) -> Vec<Date> {
