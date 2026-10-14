@@ -1,5 +1,6 @@
 pub mod document;
 pub mod inline;
+pub mod journal;
 pub mod lexer;
 pub mod parser;
 pub mod serializer;

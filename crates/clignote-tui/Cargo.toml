@@ -9,3 +9,4 @@ clignote-core.workspace = true
 ratatui.workspace   = true
 crossterm.workspace = true
 anyhow.workspace    = true
+chrono.workspace    = true

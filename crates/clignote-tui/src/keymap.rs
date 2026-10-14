@@ -32,6 +32,10 @@ pub enum Action {
     NextBuffer,
     PrevBuffer,
     KillBuffer,
+    /// Open today's journal file and start a timed entry.
+    JournalNewEntry,
+    JournalNext,
+    JournalPrev,
     /// Org heading / TODO editing (`SPC m …`, `M-h/j/k/l`).
     Structure(StructureOp),
 }
@@ -84,6 +88,10 @@ fn exact_match(s: &str) -> Option<Action> {
         "SPC b n" => Some(Action::NextBuffer),
         "SPC b p" => Some(Action::PrevBuffer),
         "SPC b d" | "SPC b k" => Some(Action::KillBuffer),
+        // Journal (org-journal): Doom's `SPC n j` and the shorter `SPC j`
+        "SPC n j j" | "SPC j j" => Some(Action::JournalNewEntry),
+        "SPC n j n" | "SPC j n" => Some(Action::JournalNext),
+        "SPC n j p" | "SPC j p" => Some(Action::JournalPrev),
         // Org structure editing (Doom's `SPC m` local leader)
         "SPC m h" => Some(Action::Structure(StructureOp::Promote)),
         "SPC m l" => Some(Action::Structure(StructureOp::Demote)),
@@ -98,7 +106,8 @@ fn exact_match(s: &str) -> Option<Action> {
 }
 
 const KNOWN_PREFIXES: &[&str] = &[
-    "g", "d", "y", "C-w", "SPC", "SPC f", "SPC w", "SPC b", "SPC m", "SPC q", "SPC t",
+    "g", "d", "y", "C-w", "SPC", "SPC f", "SPC w", "SPC b", "SPC m", "SPC q", "SPC t", "SPC n",
+    "SPC n j", "SPC j",
 ];
 
 pub fn match_seq(seq_str: &str) -> MatchResult {
@@ -119,8 +128,10 @@ pub fn hint_for_prefix(prefix: &str) -> &'static str {
         "d" => "d: delete line  w: delete word",
         "y" => "y: yank line",
         "C-w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
-        "SPC" => "f: file  w: window  b: buffer  m: org  q: quit  t: toggle",
+        "SPC" => "f: file  w: window  b: buffer  m: org  n: notes  j: journal  q: quit  t: toggle",
         "SPC m" => "h/l: promote/demote  H/L: subtree  j/k: move  t/T: TODO",
+        "SPC n" => "j: journal",
+        "SPC n j" | "SPC j" => "j: new entry  n: next day  p: prev day",
         "SPC f" => "s: save",
         "SPC w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
         "SPC b" => "b: list  n: next  p: prev  d/k: kill",

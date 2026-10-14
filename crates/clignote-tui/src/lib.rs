@@ -1,6 +1,7 @@
 pub mod app;
 pub mod fold;
 pub mod git;
+pub mod journal;
 pub mod keymap;
 mod links;
 pub mod pane;

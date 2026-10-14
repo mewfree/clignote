@@ -69,6 +69,26 @@ impl Pane {
         })
     }
 
+    /// A not-yet-written file at `path` with initial `lines`.
+    pub fn new_file(path: PathBuf, lines: Vec<String>) -> Self {
+        Self {
+            lines,
+            file_path: Some(path),
+            modified: true,
+            ..Self::empty()
+        }
+    }
+
+    /// Append `line` at the end of the buffer and put the cursor after it.
+    pub fn append_line(&mut self, line: String) {
+        self.snapshot();
+        self.lines.push(line);
+        self.cursor_row = self.lines.len() - 1;
+        self.cursor_col = self.current_line_len();
+        self.snap_cursor_visible();
+        self.modified = true;
+    }
+
     pub fn empty() -> Self {
         Self {
             lines: vec![String::new()],

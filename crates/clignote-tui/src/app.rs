@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
+use crate::journal;
 use crate::keymap::{self, Action, MatchResult, PaneDir};
 use crate::pane::Pane;
 use crate::structure::StructureOp;
@@ -412,6 +413,18 @@ impl App {
     // ── Normal mode ───────────────────────────────────────────────────────────
 
     fn handle_normal(&mut self, key: KeyEvent) {
+        // C-n / C-p walk journal days, but only inside a journal file.
+        if self.key_seq.is_empty() && key.modifiers == KeyModifiers::CONTROL {
+            let forward = match key.code {
+                KeyCode::Char('n') => Some(true),
+                KeyCode::Char('p') => Some(false),
+                _ => None,
+            };
+            if let Some(forward) = forward.filter(|_| self.current_journal_date().is_some()) {
+                self.journal_step(forward);
+                return;
+            }
+        }
         self.key_seq.push(key);
         let seq_str = keymap::seq_to_str(&self.key_seq);
 
@@ -637,6 +650,9 @@ impl App {
             Action::NextBuffer => self.cycle_buffer(1),
             Action::PrevBuffer => self.cycle_buffer(-1),
             Action::KillBuffer => self.kill_current_buffer(),
+            Action::JournalNewEntry => self.journal_new_entry(),
+            Action::JournalNext => self.journal_step(true),
+            Action::JournalPrev => self.journal_step(false),
             Action::Structure(op) => self.structure_edit(op),
         }
     }
@@ -1056,23 +1072,96 @@ impl App {
         }
     }
 
+    /// Replace the active pane's buffer with `pane`, recording it as a buffer.
+    fn install_pane(&mut self, pane: Pane) {
+        if let Some(p) = pane.file_path.clone() {
+            self.record_buffer(p);
+        }
+        self.panes[self.active_pane] = pane;
+        self.visual_anchor = None;
+        self.key_seq.clear();
+        self.mode = Mode::Normal;
+    }
+
     fn open_file(&mut self, path: &Path, force: bool) {
         if !force && self.pane().modified {
             self.message = Some("Unsaved changes — :w first, or :e! to discard".into());
             return;
         }
         match Pane::from_file(path) {
-            Ok(pane) => {
-                if let Some(p) = pane.file_path.clone() {
-                    self.record_buffer(p);
-                }
-                self.panes[self.active_pane] = pane;
-                self.visual_anchor = None;
-                self.key_seq.clear();
-                self.mode = Mode::Normal;
-            }
+            Ok(pane) => self.install_pane(pane),
             Err(e) => {
                 self.message = Some(format!("Cannot open \"{}\": {e}", path.display()));
+            }
+        }
+    }
+
+    // ── Journal ───────────────────────────────────────────────────────────────
+
+    /// Journal date of the active pane's file, if it lives in the journal dir.
+    fn current_journal_date(&self) -> Option<clignote_core::journal::Date> {
+        let dir = journal::journal_dir()?;
+        journal::date_of_path(self.pane().file_path.as_ref()?, &dir)
+    }
+
+    /// Open (or create) today's journal file and start a timed entry at its end.
+    fn journal_new_entry(&mut self) {
+        use chrono::{Datelike, Timelike};
+        use clignote_core::journal::{timed_headline, Date};
+
+        if self.pane().modified {
+            self.message = Some("Unsaved changes — :w first".into());
+            return;
+        }
+        let Some(dir) = journal::journal_dir() else {
+            self.message = Some("Journal: set CLN_JOURNAL_DIR (no $HOME)".into());
+            return;
+        };
+        let now = chrono::Local::now();
+        let Some(today) = Date::new(now.year(), now.month(), now.day()) else {
+            self.message = Some("Journal: cannot determine today's date".into());
+            return;
+        };
+        let path = dir.join(today.file_name());
+        let mut pane = if path.exists() {
+            match Pane::from_file(&path) {
+                Ok(p) => p,
+                Err(e) => {
+                    self.message = Some(format!("Cannot open \"{}\": {e}", path.display()));
+                    return;
+                }
+            }
+        } else {
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                self.message = Some(format!("Cannot create \"{}\": {e}", dir.display()));
+                return;
+            }
+            Pane::new_file(path, vec![today.headline()])
+        };
+        pane.append_line(timed_headline(now.hour(), now.minute()));
+        self.install_pane(pane);
+        self.mode = Mode::Insert;
+    }
+
+    /// Open the next/previous existing journal day relative to the current file.
+    fn journal_step(&mut self, forward: bool) {
+        let (Some(dir), Some(current)) = (journal::journal_dir(), self.current_journal_date())
+        else {
+            self.message = Some("Not in a journal file".into());
+            return;
+        };
+        let dates = journal::list_dates(&dir);
+        match clignote_core::journal::neighbor(&dates, current, forward) {
+            Some(date) => self.open_file(&dir.join(date.file_name()), false),
+            None => {
+                self.message = Some(
+                    if forward {
+                        "No next journal entry"
+                    } else {
+                        "No previous journal entry"
+                    }
+                    .into(),
+                );
             }
         }
     }
