@@ -1205,11 +1205,14 @@ impl App {
             {
                 pane.append_line(String::new());
             }
-            pane.append_line(timed_headline(
-                self.config.journal_entry_level,
-                now.hour(),
-                now.minute(),
-            ));
+            let headline =
+                timed_headline(self.config.journal_entry_level, now.hour(), now.minute());
+            // Text goes on its own line under the heading.
+            pane.append_line(headline.trim_end().to_string());
+            if self.config.journal_blank_below {
+                pane.append_line(String::new());
+            }
+            pane.append_line(String::new());
         }
         self.install_pane(pane);
         if new_entry {

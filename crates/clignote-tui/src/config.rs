@@ -7,6 +7,7 @@
 //! file_format = "%Y-%m-%d"   # default "%Y%m%d"; ".org" is appended
 //! entry_level = 1            # 1 = "* 14:05", 2 = "** 14:05" (default 1)
 //! blank_line_above = true    # blank line before a new entry (default true)
+//! blank_line_below = false   # blank line between entry heading and text (default false)
 //!
 //! [editor]
 //! line_numbers = "relative"  # "off", "absolute" or "relative" (default)
@@ -44,6 +45,7 @@ struct RawJournal {
     file_format: Option<String>,
     entry_level: Option<usize>,
     blank_line_above: Option<bool>,
+    blank_line_below: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +58,8 @@ pub struct Config {
     pub journal_entry_level: usize,
     /// Whether a new entry is preceded by a blank line.
     pub journal_blank_above: bool,
+    /// Whether a blank line separates a new entry's heading from its text.
+    pub journal_blank_below: bool,
     /// Initial line-number mode.
     pub line_numbers: LineNumbers,
 }
@@ -67,6 +71,7 @@ impl Default for Config {
             journal_file_format: FileFormat::default(),
             journal_entry_level: 1,
             journal_blank_above: true,
+            journal_blank_below: false,
             line_numbers: LineNumbers::Relative,
         }
     }
@@ -109,6 +114,10 @@ impl Config {
                 .journal
                 .blank_line_above
                 .unwrap_or(defaults.journal_blank_above),
+            journal_blank_below: raw
+                .journal
+                .blank_line_below
+                .unwrap_or(defaults.journal_blank_below),
             line_numbers,
         })
     }
@@ -197,6 +206,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!((c.journal_entry_level, c.journal_blank_above), (2, false));
+        let c = Config::parse("[journal]\nblank_line_below = true\n", None).unwrap();
+        assert!(c.journal_blank_below);
         assert!(Config::parse("[journal]\nentry_level = 0\n", None).is_err());
         assert!(Config::parse("[journal]\nentry_level = 7\n", None).is_err());
     }
