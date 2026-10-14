@@ -34,6 +34,8 @@ pub enum Action {
     KillBuffer,
     /// Open today's journal file and start a timed entry.
     JournalNewEntry,
+    /// Open today's journal file without adding a timed entry.
+    JournalToday,
     JournalNext,
     JournalPrev,
     /// Org heading / TODO editing (`SPC m …`, `M-h/j/k/l`).
@@ -90,6 +92,7 @@ fn exact_match(s: &str) -> Option<Action> {
         "SPC b d" | "SPC b k" => Some(Action::KillBuffer),
         // Journal (org-journal): Doom's `SPC n j` and the shorter `SPC j`
         "SPC n j j" | "SPC j j" => Some(Action::JournalNewEntry),
+        "SPC n j t" | "SPC j t" => Some(Action::JournalToday),
         "SPC n j n" | "SPC j n" => Some(Action::JournalNext),
         "SPC n j p" | "SPC j p" => Some(Action::JournalPrev),
         // Org structure editing (Doom's `SPC m` local leader)
@@ -131,7 +134,7 @@ pub fn hint_for_prefix(prefix: &str) -> &'static str {
         "SPC" => "f: file  w: window  b: buffer  m: org  n: notes  j: journal  q: quit  t: toggle",
         "SPC m" => "h/l: promote/demote  H/L: subtree  j/k: move  t/T: TODO",
         "SPC n" => "j: journal",
-        "SPC n j" | "SPC j" => "j: new entry  n: next day  p: prev day",
+        "SPC n j" | "SPC j" => "j: new entry  t: today  n: next day  p: prev day",
         "SPC f" => "s: save",
         "SPC w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
         "SPC b" => "b: list  n: next  p: prev  d/k: kill",

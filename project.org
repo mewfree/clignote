@@ -117,6 +117,7 @@
 
 ** TODO leader / command bindings for journal
   - SPC n j j / SPC j j — new entry today (both bound; done)
+  - SPC n j t / SPC j t — open today's file, no new timed entry (done)
   - C-n / C-p — next/prev day, journal files only (done)
   - journal dir via $CLN_JOURNAL_DIR (default ~/org/journal); real config file still TODO
   - SPC j d — open today's file without creating a new timed entry

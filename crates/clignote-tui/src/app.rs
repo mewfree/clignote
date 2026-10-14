@@ -650,7 +650,8 @@ impl App {
             Action::NextBuffer => self.cycle_buffer(1),
             Action::PrevBuffer => self.cycle_buffer(-1),
             Action::KillBuffer => self.kill_current_buffer(),
-            Action::JournalNewEntry => self.journal_new_entry(),
+            Action::JournalNewEntry => self.journal_open_today(true),
+            Action::JournalToday => self.journal_open_today(false),
             Action::JournalNext => self.journal_step(true),
             Action::JournalPrev => self.journal_step(false),
             Action::Structure(op) => self.structure_edit(op),
@@ -1104,8 +1105,9 @@ impl App {
         journal::date_of_path(self.pane().file_path.as_ref()?, &dir)
     }
 
-    /// Open (or create) today's journal file and start a timed entry at its end.
-    fn journal_new_entry(&mut self) {
+    /// Open (or create) today's journal file. With `new_entry`, also start a
+    /// timed entry at its end and enter insert mode; otherwise just show the day.
+    fn journal_open_today(&mut self, new_entry: bool) {
         use chrono::{Datelike, Timelike};
         use clignote_core::journal::{timed_headline, Date};
 
@@ -1138,9 +1140,13 @@ impl App {
             }
             Pane::new_file(path, vec![today.headline()])
         };
-        pane.append_line(timed_headline(now.hour(), now.minute()));
+        if new_entry {
+            pane.append_line(timed_headline(now.hour(), now.minute()));
+        }
         self.install_pane(pane);
-        self.mode = Mode::Insert;
+        if new_entry {
+            self.mode = Mode::Insert;
+        }
     }
 
     /// Open the next/previous existing journal day relative to the current file.
