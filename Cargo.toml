@@ -16,5 +16,5 @@ ratatui   = "0.30"
 crossterm = "0.29"
 chrono    = { version = "0.4", default-features = false, features = ["clock"] }
 serde     = { version = "1", features = ["derive"] }
-toml      = "0.8"
+toml      = "1"
 clap      = { version = "4", features = ["derive"] }
