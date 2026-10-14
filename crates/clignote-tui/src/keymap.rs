@@ -28,6 +28,7 @@ pub enum Action {
     ToggleLinkConceal,
     ToggleWrap,
     ToggleIndent,
+    ToggleLineNumbers,
     BufferList,
     NextBuffer,
     PrevBuffer,
@@ -85,6 +86,7 @@ fn exact_match(s: &str) -> Option<Action> {
         "SPC t l" => Some(Action::ToggleLinkConceal),
         "SPC t w" => Some(Action::ToggleWrap),
         "SPC t i" => Some(Action::ToggleIndent),
+        "SPC t n" => Some(Action::ToggleLineNumbers),
         // Doom/Spacemacs SPC b buffer commands
         "SPC b b" => Some(Action::BufferList),
         "SPC b n" => Some(Action::NextBuffer),
@@ -139,7 +141,7 @@ pub fn hint_for_prefix(prefix: &str) -> &'static str {
         "SPC w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
         "SPC b" => "b: list  n: next  p: prev  d/k: kill",
         "SPC q" => "q: quit",
-        "SPC t" => "l: toggle link display (label/target)  w: toggle soft wrap  i: toggle indent",
+        "SPC t" => "l: toggle link display (label/target)  w: toggle soft wrap  i: toggle indent  n: cycle line numbers",
         _ => "",
     }
 }

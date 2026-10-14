@@ -71,6 +71,7 @@ cln                   # open file picker in current directory
 | ~RET~     | in insert mode: continue list item     |
 | ~SPC t w~ | toggle soft wrap (on by default)       |
 | ~SPC t i~ | toggle body indent under headings (on by default) |
+| ~SPC t n~ | cycle line numbers: off, absolute, relative |
 | ~:w~      | save                          |
 | ~:q~      | quit                          |
 | ~:wq~     | save and quit                 |

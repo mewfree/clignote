@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Mode, PaneLayout, SplitDir};
+use crate::app::{App, LineNumbers, Mode, PaneLayout, SplitDir};
 use crate::git::LineStatus;
 use crate::links;
 use crate::pane::{scroll_into_view, Pane};
@@ -23,6 +23,7 @@ struct PaneRenderCtx {
     wrap: bool,
     /// Indent body text under headings.
     indent: bool,
+    line_numbers: LineNumbers,
 }
 
 struct SearchView<'a> {
@@ -97,6 +98,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             conceal_links: app.conceal_links,
             wrap: app.wrap,
             indent: app.indent,
+            line_numbers: app.line_numbers,
         };
         render_pane(
             frame,
@@ -277,6 +279,30 @@ fn render_buffer_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+const GIT_GUTTER: u16 = 1;
+
+/// Width of the line-number column (digits plus a separating space), or 0.
+fn number_width(mode: LineNumbers, line_count: usize) -> u16 {
+    if mode == LineNumbers::Off {
+        return 0;
+    }
+    let digits = line_count.max(1).to_string().len() as u16;
+    digits.max(2) + 1
+}
+
+/// Total gutter width for a pane of `area_width`: git column plus line
+/// numbers, dropped when the pane is too narrow to leave room for content.
+pub fn gutter_width(mode: LineNumbers, line_count: usize, area_width: u16) -> u16 {
+    let full = GIT_GUTTER + number_width(mode, line_count);
+    if area_width > full {
+        full
+    } else if area_width > GIT_GUTTER {
+        GIT_GUTTER
+    } else {
+        0
+    }
+}
+
 // ── Pane renderer ─────────────────────────────────────────────────────────────
 
 fn render_pane(
@@ -289,12 +315,15 @@ fn render_pane(
     let is_active = pane_ctx.is_active;
     let height = area.height as usize;
 
-    // Split off a 1-column gutter on the left for git status marks.
-    const GUTTER: u16 = 1;
-    let (gutter_area, content_area) = if area.width > GUTTER {
+    // Split off a gutter on the left: 1 column of git status marks, then
+    // the line-number column when enabled.
+    let num_width = number_width(pane_ctx.line_numbers, pane.lines.len());
+    let gutter = gutter_width(pane_ctx.line_numbers, pane.lines.len(), area.width);
+    let num_width = if gutter > GIT_GUTTER { num_width } else { 0 };
+    let (gutter_area, content_area) = if gutter > 0 {
         (
-            Rect::new(area.x, area.y, GUTTER, area.height),
-            Rect::new(area.x + GUTTER, area.y, area.width - GUTTER, area.height),
+            Rect::new(area.x, area.y, gutter, area.height),
+            Rect::new(area.x + gutter, area.y, area.width - gutter, area.height),
         )
     } else {
         (Rect::new(area.x, area.y, 0, 0), area)
@@ -376,7 +405,31 @@ fn render_pane(
                 LineStatus::Modified => ("~", Style::default().fg(Color::Yellow)),
                 LineStatus::Unchanged => (" ", Style::default()),
             };
-            gutter_lines.push(Line::from(Span::styled(ch, style)));
+            let mut gutter_line = vec![Span::styled(ch, style)];
+            if num_width > 0 {
+                let text = if seg > 0 {
+                    String::new()
+                } else {
+                    let n = match pane_ctx.line_numbers {
+                        LineNumbers::Relative if row != pane.cursor_row => {
+                            row.abs_diff(pane.cursor_row)
+                        }
+                        _ => row + 1,
+                    };
+                    n.to_string()
+                };
+                let num_style = if row == pane.cursor_row {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                // Right-aligned, with one trailing space before the text.
+                gutter_line.push(Span::styled(
+                    format!("{text:>w$} ", w = num_width as usize - 1),
+                    num_style,
+                ));
+            }
+            gutter_lines.push(Line::from(gutter_line));
         }
         i += run_len;
     }
@@ -904,6 +957,47 @@ mod tests {
         let mut app = App::new(None).unwrap();
         app.pane_mut().lines = text.lines().map(str::to_owned).collect();
         app
+    }
+
+    #[test]
+    fn absolute_line_numbers_precede_content() {
+        let mut app = app_with("one\ntwo\nthree");
+        app.line_numbers = LineNumbers::Absolute;
+        let (rows, cursor) = draw(&mut app, 20, 6);
+        assert_eq!(rows[0].trim_end(), " 1 one");
+        assert_eq!(rows[2].trim_end(), " 3 three");
+        // gutter 1 + number column 3
+        assert_eq!(cursor.map(|c| c.0), Some(4));
+    }
+
+    #[test]
+    fn relative_line_numbers_show_distance_and_absolute_on_cursor() {
+        let mut app = app_with("a\nb\nc\nd");
+        app.line_numbers = LineNumbers::Relative;
+        app.pane_mut().cursor_row = 1;
+        let (rows, _) = draw(&mut app, 20, 7);
+        assert_eq!(rows[0].trim_end(), " 1 a");
+        assert_eq!(rows[1].trim_end(), " 2 b");
+        assert_eq!(rows[2].trim_end(), " 1 c");
+        assert_eq!(rows[3].trim_end(), " 2 d");
+    }
+
+    #[test]
+    fn line_numbers_blank_on_wrapped_continuation() {
+        let mut app = app_with("aaaa bbbb cccc dddd\nnext");
+        app.line_numbers = LineNumbers::Absolute;
+        // 1 git + 3 number + 10 content
+        let (rows, _) = draw(&mut app, 14, 6);
+        assert_eq!(rows[0].trim_end(), " 1 aaaa bbbb");
+        assert_eq!(rows[1].trim_end(), "   cccc dddd");
+        assert_eq!(rows[2].trim_end(), " 2 next");
+    }
+
+    #[test]
+    fn line_numbers_cycle() {
+        assert_eq!(LineNumbers::Off.next(), LineNumbers::Absolute);
+        assert_eq!(LineNumbers::Absolute.next(), LineNumbers::Relative);
+        assert_eq!(LineNumbers::Relative.next(), LineNumbers::Off);
     }
 
     #[test]

@@ -210,6 +210,34 @@ impl PaneLayout {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
+/// How the line-number column is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineNumbers {
+    #[default]
+    Off,
+    Absolute,
+    /// Distance from the cursor row; the cursor row shows its absolute number.
+    Relative,
+}
+
+impl LineNumbers {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Absolute,
+            Self::Absolute => Self::Relative,
+            Self::Relative => Self::Off,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Absolute => "absolute",
+            Self::Relative => "relative",
+        }
+    }
+}
+
 pub struct App {
     pub mode: Mode,
     pub panes: Vec<Pane>,
@@ -262,6 +290,10 @@ pub struct App {
     /// the heading's level. Display only; the buffer is untouched.
     /// Toggle with `SPC t i`.
     pub indent: bool,
+
+    /// Line-number column: off (default), absolute, or relative to the cursor.
+    /// Cycle with `SPC t n`.
+    pub line_numbers: LineNumbers,
 
     // Directory browser state (Mode::Browse)
     pub browse_dir: PathBuf,
@@ -335,6 +367,7 @@ impl App {
             conceal_links: true,
             wrap: true,
             indent: true,
+            line_numbers: LineNumbers::Off,
             browse_dir: PathBuf::new(),
             browse_entries: Vec::new(),
             browse_selected: 0,
@@ -399,13 +432,9 @@ impl App {
         let rect = self.pane_rects[i];
         self.active_pane = i;
         let pane = &mut self.panes[i];
-        // Content starts after the 1-col git gutter (when there is room).
-        const GUTTER: usize = 1;
-        let content_x = if rect.width as usize > GUTTER {
-            rect.x as usize + GUTTER
-        } else {
-            rect.x as usize
-        };
+        // Content starts after the gutter (git mark + line numbers).
+        let gutter = crate::ui::gutter_width(self.line_numbers, pane.lines.len(), rect.width);
+        let content_x = rect.x as usize + gutter as usize;
         let (buf_row, buf_col) =
             pane.pos_at_screen(col.saturating_sub(content_x), row - rect.y as usize);
         pane.cursor_row = buf_row;
@@ -642,6 +671,10 @@ impl App {
                 } else {
                     "Indent: off".into()
                 });
+            }
+            Action::ToggleLineNumbers => {
+                self.line_numbers = self.line_numbers.next();
+                self.message = Some(format!("Line numbers: {}", self.line_numbers.label()));
             }
             Action::ToggleLinkConceal => {
                 self.conceal_links = !self.conceal_links;
