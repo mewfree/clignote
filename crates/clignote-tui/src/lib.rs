@@ -15,6 +15,7 @@ pub use app::App;
 use std::io;
 
 use crossterm::{
+    cursor::SetCursorStyle,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -27,6 +28,12 @@ pub fn run(file_path: Option<&str>) -> anyhow::Result<()> {
 
     loop {
         terminal.draw(|f| ui::render(f, &mut app))?;
+        // Thin bar in Insert mode; otherwise the user's own cursor shape.
+        let style = match app.mode {
+            app::Mode::Insert => SetCursorStyle::SteadyBar,
+            _ => SetCursorStyle::DefaultUserShape,
+        };
+        execute!(terminal.backend_mut(), style)?;
 
         // Block until something happens; there are no timers, so redrawing on
         // an idle poll would only burn CPU (and re-run the git diff).
@@ -56,6 +63,7 @@ fn restore_terminal(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) -> any
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        SetCursorStyle::DefaultUserShape,
         DisableMouseCapture,
         LeaveAlternateScreen
     )?;
