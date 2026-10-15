@@ -665,6 +665,7 @@ impl App {
             Action::NextPane => self.cycle_pane(),
             Action::FocusPane(dir) => self.focus_pane(dir),
             Action::SaveFile => self.save_active(),
+            Action::SaveCommitPush => self.save_commit_push(),
             Action::ToggleWrap => {
                 self.wrap = !self.wrap;
                 self.message = Some(if self.wrap {
@@ -1419,6 +1420,26 @@ impl App {
         self.message = Some(result.unwrap_or_else(|e| e));
     }
 
+    /// Save, then commit the file with a `YYYY-MM-DD HH:MM` message and push
+    /// to the current branch's upstream (or `origin`).
+    fn save_commit_push(&mut self) {
+        let saved = match self.panes[self.active_pane].save() {
+            Ok(m) => m,
+            Err(e) => {
+                self.message = Some(e);
+                return;
+            }
+        };
+        let Some(path) = self.pane().file_path.clone() else {
+            return;
+        };
+        let msg = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+        self.message = Some(match git_commit_push(&path, &msg) {
+            Ok(out) => format!("{saved}; {out} ({msg})"),
+            Err(e) => format!("{saved}; git: {e}"),
+        });
+    }
+
     // ── Visual selection query (used by ui.rs) ────────────────────────────────
 
     /// Returns `Some((start_row, start_col, end_row, end_col, line_wise))` when
@@ -1438,4 +1459,47 @@ impl App {
         };
         Some((sr, sc, er, ec, line_wise))
     }
+}
+
+/// Run `git` in `dir`, returning trimmed stdout or a stderr-based error.
+fn git(dir: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let err = if err.trim().is_empty() {
+            String::from_utf8_lossy(&out.stdout)
+        } else {
+            err
+        };
+        Err(err.trim().lines().next().unwrap_or("failed").to_string())
+    }
+}
+
+/// Stage and commit `path` (skipped when unchanged), then push.
+fn git_commit_push(path: &std::path::Path, message: &str) -> Result<String, String> {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let file = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or("invalid file name")?;
+    git(dir, &["add", "--", file])?;
+    let committed = git(dir, &["diff", "--cached", "--quiet", "--", file]).is_err();
+    if committed {
+        git(dir, &["commit", "-m", message, "--", file])?;
+    }
+    git(dir, &["push"]).or_else(|_| git(dir, &["push", "origin", "HEAD"]))?;
+    Ok(if committed {
+        "committed and pushed".into()
+    } else {
+        "nothing to commit, pushed".into()
+    })
 }
