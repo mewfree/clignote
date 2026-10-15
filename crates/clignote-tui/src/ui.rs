@@ -850,25 +850,47 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or("[no file]");
-    let modified = if pane.modified { " [+]" } else { "" };
     let split_indicator = if app.panes.len() > 1 {
         format!("  [{} panes]", app.panes.len())
     } else {
         String::new()
     };
 
-    let file_span = Span::styled(
-        format!(" {file_name}{modified}{split_indicator} "),
+    let mut spans = vec![
+        mode_span,
+        Span::styled(format!(" {file_name}"), Style::default().fg(Color::White)),
+    ];
+    if pane.modified {
+        spans.push(Span::styled(
+            " [+]",
+            Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::styled(
+        format!("{split_indicator} "),
         Style::default().fg(Color::White),
-    );
+    ));
 
-    let pos_span = Span::styled(
-        format!(" {}:{} ", pane.cursor_row + 1, pane.cursor_col + 1),
-        Style::default().fg(Color::DarkGray),
+    // Right-aligned: line:col and how far down the file the cursor is.
+    let total = pane.lines.len().max(1);
+    let percent = match pane.cursor_row {
+        0 => "Top".to_string(),
+        r if r + 1 >= total => "Bot".to_string(),
+        r => format!("{}%", (r + 1) * 100 / total),
+    };
+    let right = format!(
+        " {}:{}  {percent} ",
+        pane.cursor_row + 1,
+        pane.cursor_col + 1
     );
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let pad = (area.width as usize).saturating_sub(used + right.chars().count());
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(right, Style::default().fg(Color::Gray)));
 
-    let bar = Paragraph::new(Line::from(vec![mode_span, file_span, pos_span]))
-        .style(Style::default().bg(Color::DarkGray));
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
     frame.render_widget(bar, area);
 }
 
