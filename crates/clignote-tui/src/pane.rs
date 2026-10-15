@@ -115,9 +115,9 @@ impl Pane {
         self.git_diff = git::diff_with_head(self.head_lines.as_deref(), &self.lines);
     }
 
-    /// Re-fetch HEAD content from git (called after a successful save so that
-    /// a subsequent commit will reset the baseline correctly).
-    fn refresh_head_lines(&mut self) {
+    /// Re-fetch HEAD content from git (after a save, and after a commit moves
+    /// HEAD).
+    pub fn refresh_head_lines(&mut self) {
         if let Some(path) = &self.file_path {
             self.head_lines = git::get_head_lines(path);
         }

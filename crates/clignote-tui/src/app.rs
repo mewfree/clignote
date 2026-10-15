@@ -1442,15 +1442,16 @@ impl App {
         };
         let msg = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
         let (tx, rx) = std::sync::mpsc::channel();
-        let job_msg = msg.clone();
+        let (job_path, job_msg) = (path.clone(), msg.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(git_commit_push(&path, &job_msg));
+            let _ = tx.send(git_commit_push(&job_path, &job_msg));
         });
         self.commit_job = Some(CommitJob {
             rx,
             started: std::time::Instant::now(),
             saved,
             msg,
+            path,
         });
     }
 
@@ -1468,6 +1469,13 @@ impl App {
         let Some(job) = self.commit_job.take() else {
             return false;
         };
+        // The commit moved HEAD: re-baseline the gutter so committed lines
+        // stop showing as added/modified.
+        for pane in &mut self.panes {
+            if pane.file_path.as_deref() == Some(job.path.as_path()) {
+                pane.refresh_head_lines();
+            }
+        }
         self.message = Some(match result {
             Ok(out) => format!("{}; {out} ({})", job.saved, job.msg),
             Err(e) => format!("{}; git: {e}", job.saved),
@@ -1502,6 +1510,7 @@ pub struct CommitJob {
     started: std::time::Instant,
     saved: String,
     msg: String,
+    path: PathBuf,
 }
 
 impl CommitJob {
