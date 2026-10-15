@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::journal;
 use crate::keymap::{self, Action, MatchResult, PaneDir};
 use crate::pane::Pane;
+use crate::picker::{self, Picker};
 use crate::structure::StructureOp;
 
 // ── Tab completion ────────────────────────────────────────────────────────────
@@ -93,6 +94,8 @@ pub enum Mode {
     Browse,
     /// Buffer switcher (`SPC b b`).
     BufferList,
+    /// Fuzzy file picker (`SPC f f`, `SPC SPC`).
+    FilePicker,
 }
 
 impl Mode {
@@ -106,6 +109,7 @@ impl Mode {
             Mode::Visual { line_wise: false } => "VISUAL",
             Mode::Browse => "BROWSE",
             Mode::BufferList => "BUFFERS",
+            Mode::FilePicker => "FIND FILE",
         }
     }
 }
@@ -318,6 +322,8 @@ pub struct App {
     /// Selection state for Mode::BufferList.
     pub buf_list_selected: usize,
     pub buf_list_scroll: usize,
+    /// State for Mode::FilePicker.
+    pub picker: Picker,
     /// User configuration (file + environment).
     config: Config,
 }
@@ -387,6 +393,7 @@ impl App {
             buffers,
             buf_list_selected: 0,
             buf_list_scroll: 0,
+            picker: Picker::default(),
             config,
         };
         app.message = config_warning;
@@ -418,6 +425,7 @@ impl App {
             Mode::Visual { line_wise } => self.handle_visual(key, line_wise),
             Mode::Browse => self.handle_browse(key),
             Mode::BufferList => self.handle_buffer_list(key),
+            Mode::FilePicker => self.handle_picker(key),
         }
     }
 
@@ -699,6 +707,7 @@ impl App {
             }
             Action::QuitAll => self.quit_if_clean(),
             Action::BufferList => self.enter_buffer_list(),
+            Action::FindFile => self.enter_picker(),
             Action::NextBuffer => self.cycle_buffer(1),
             Action::PrevBuffer => self.cycle_buffer(-1),
             Action::KillBuffer => self.kill_current_buffer(),
@@ -1298,6 +1307,48 @@ impl App {
                 };
                 self.open_file(&path, false);
             }
+            _ => {}
+        }
+    }
+
+    // ── File picker ───────────────────────────────────────────────────────────
+
+    /// Open the fuzzy picker over `.org` files in the project (nearest git
+    /// root above the working directory, else the working directory).
+    fn enter_picker(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        self.picker = Picker::open(picker::project_root(&cwd));
+        self.mode = Mode::FilePicker;
+        self.key_seq.clear();
+    }
+
+    fn handle_picker(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Char('c' | 'g') if ctrl => self.mode = Mode::Normal,
+            KeyCode::Down => self.picker.move_down(),
+            KeyCode::Up => self.picker.move_up(),
+            KeyCode::Char('n' | 'j') if ctrl => self.picker.move_down(),
+            KeyCode::Char('p' | 'k') if ctrl => self.picker.move_up(),
+            KeyCode::Char('u') if ctrl => self.picker.clear(),
+            KeyCode::Backspace => self.picker.pop(),
+            KeyCode::Enter => {
+                let Some(rel) = self.picker.selected_path() else {
+                    return;
+                };
+                let mut path = self.picker.root.join(rel);
+                // Prefer a cwd-relative path so it matches files opened from
+                // the command line in the buffer list.
+                if let Ok(cwd) = std::env::current_dir() {
+                    if let Ok(stripped) = path.strip_prefix(&cwd) {
+                        path = stripped.to_path_buf();
+                    }
+                }
+                self.open_file(&path, false);
+            }
+            KeyCode::Char(c) if !ctrl && !alt => self.picker.push(c),
             _ => {}
         }
     }

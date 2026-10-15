@@ -6,6 +6,7 @@ pub mod journal;
 pub mod keymap;
 mod links;
 pub mod pane;
+pub mod picker;
 pub mod structure;
 pub mod ui;
 pub mod wrap;

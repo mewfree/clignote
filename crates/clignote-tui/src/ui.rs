@@ -68,7 +68,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // In Browse/BufferList mode, the active pane's content is replaced by the
     // overlay; other panes keep showing their buffers.
-    let overlay_active = matches!(app.mode, Mode::Browse | Mode::BufferList);
+    let overlay_active = matches!(app.mode, Mode::Browse | Mode::BufferList | Mode::FilePicker);
     let visual_sel = app.visual_selection();
 
     // Render each pane. Fields are borrowed disjointly, so the search matches
@@ -113,6 +113,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.mode {
         Mode::Browse => render_browse(frame, app, active_rect),
         Mode::BufferList => render_buffer_list(frame, app, active_rect),
+        Mode::FilePicker => render_picker(frame, app, active_rect),
         _ => {}
     }
 
@@ -271,6 +272,52 @@ fn render_buffer_list(frame: &mut Frame, app: &mut App, area: Rect) {
             let style = list_row_style(base, idx == app.buf_list_selected);
             lines.push(Line::from(Span::styled(
                 format!(" {marker}{} ", path.display()),
+                style,
+            )));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn render_picker(frame: &mut Frame, app: &mut App, area: Rect) {
+    const HEADER_ROWS: usize = 2; // title line + query line
+
+    let list_height = (area.height as usize).saturating_sub(HEADER_ROWS);
+    let picker = &mut app.picker;
+    scroll_into_view(&mut picker.scroll, picker.selected, list_height);
+
+    let title = format!(
+        "Find file in {}  ({}/{}, RET open, Esc cancel)",
+        picker.root.display(),
+        picker.results.len(),
+        picker.files.len()
+    );
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("> {}", picker.query)),
+    ];
+    if picker.results.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " (no matching .org files) ",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        let rows = picker
+            .results
+            .iter()
+            .enumerate()
+            .skip(picker.scroll)
+            .take(list_height);
+        for (idx, &file_idx) in rows {
+            let style = list_row_style(Style::default(), idx == picker.selected);
+            lines.push(Line::from(Span::styled(
+                format!(" {} ", picker.files[file_idx].display()),
                 style,
             )));
         }
@@ -837,7 +884,9 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Insert => (Color::Green, Color::Black),
         Mode::Command => (Color::Yellow, Color::Black),
         Mode::Visual { .. } => (Color::Magenta, Color::White),
-        Mode::Search | Mode::Browse | Mode::BufferList => (Color::Cyan, Color::Black),
+        Mode::Search | Mode::Browse | Mode::BufferList | Mode::FilePicker => {
+            (Color::Cyan, Color::Black)
+        }
     };
     let mode_style = Style::default().bg(bg).fg(fg).add_modifier(Modifier::BOLD);
 
@@ -1097,6 +1146,43 @@ mod tests {
         let (rows, cursor) = draw(&mut app, 20, 4);
         assert_eq!(rows[1].trim_end(), "  body");
         assert_eq!(cursor, Some((3, 1)));
+    }
+
+    #[test]
+    fn file_picker_lists_filters_and_shows_query() {
+        let mut app = app_with("");
+        app.picker = crate::picker::Picker {
+            files: vec!["inbox.org".into(), "notes/todo.org".into()],
+            ..Default::default()
+        };
+        app.picker.refilter();
+        app.mode = Mode::FilePicker;
+        let (rows, _) = draw(&mut app, 60, 6);
+        // `draw` drops column 0 (the git gutter), hence "ind".
+        assert!(rows[0].contains("ind file in"), "{:?}", rows[0]);
+        // "> " minus the dropped gutter column.
+        assert_eq!(rows[1].trim(), "");
+        assert!(rows[2].contains("inbox.org"));
+        assert!(rows[3].contains("notes/todo.org"));
+
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Char('t'),
+        ));
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Char('d'),
+        ));
+        let (rows, _) = draw(&mut app, 60, 6);
+        assert_eq!(rows[1].trim(), "td");
+        assert!(rows[2].contains("notes/todo.org"));
+        assert!(rows[3].trim().is_empty(), "{:?}", rows[3]);
+    }
+
+    #[test]
+    fn spc_spc_and_spc_f_f_open_the_picker() {
+        use crate::keymap::{match_seq, Action, MatchResult};
+        for seq in ["SPC SPC", "SPC f f"] {
+            assert_eq!(match_seq(seq), MatchResult::Action(Action::FindFile));
+        }
     }
 
     #[test]
