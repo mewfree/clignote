@@ -267,6 +267,8 @@ pub struct App {
 
     // Status message (clears on next keypress)
     pub message: Option<String>,
+    /// Commit-and-push running on a worker thread (`SPC f S`).
+    pub commit_job: Option<CommitJob>,
 
     pub should_quit: bool,
 
@@ -366,6 +368,7 @@ impl App {
             key_seq: Vec::new(),
             command_buf: String::new(),
             message: None,
+            commit_job: None,
             should_quit: false,
             pane_rects: Vec::new(),
             completions: None,
@@ -1421,8 +1424,12 @@ impl App {
     }
 
     /// Save, then commit the file with a `YYYY-MM-DD HH:MM` message and push
-    /// to the current branch's upstream (or `origin`).
+    /// to the current branch's upstream (or `origin`). The git work runs on a
+    /// worker thread so the UI can show a spinner; see `poll_commit_job`.
     fn save_commit_push(&mut self) {
+        if self.commit_job.is_some() {
+            return;
+        }
         let saved = match self.panes[self.active_pane].save() {
             Ok(m) => m,
             Err(e) => {
@@ -1434,10 +1441,38 @@ impl App {
             return;
         };
         let msg = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-        self.message = Some(match git_commit_push(&path, &msg) {
-            Ok(out) => format!("{saved}; {out} ({msg})"),
-            Err(e) => format!("{saved}; git: {e}"),
+        let (tx, rx) = std::sync::mpsc::channel();
+        let job_msg = msg.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(git_commit_push(&path, &job_msg));
         });
+        self.commit_job = Some(CommitJob {
+            rx,
+            started: std::time::Instant::now(),
+            saved,
+            msg,
+        });
+    }
+
+    /// Collect a finished commit-and-push. Returns `true` when the job just
+    /// completed (the screen needs a redraw either way while one is running).
+    pub fn poll_commit_job(&mut self) -> bool {
+        let Some(job) = &self.commit_job else {
+            return false;
+        };
+        let result = match job.rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("git job died".to_string()),
+        };
+        let Some(job) = self.commit_job.take() else {
+            return false;
+        };
+        self.message = Some(match result {
+            Ok(out) => format!("{}; {out} ({})", job.saved, job.msg),
+            Err(e) => format!("{}; git: {e}", job.saved),
+        });
+        true
     }
 
     // ── Visual selection query (used by ui.rs) ────────────────────────────────
@@ -1458,6 +1493,28 @@ impl App {
             ((cr, cc), (ar, ac))
         };
         Some((sr, sc, er, ec, line_wise))
+    }
+}
+
+/// A commit-and-push running on a worker thread.
+pub struct CommitJob {
+    rx: std::sync::mpsc::Receiver<Result<String, String>>,
+    started: std::time::Instant,
+    saved: String,
+    msg: String,
+}
+
+impl CommitJob {
+    /// A spinner frame plus elapsed seconds, e.g. `⠹ committing and pushing… 3s`.
+    pub fn spinner_line(&self) -> String {
+        const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let elapsed = self.started.elapsed();
+        let frame = (elapsed.as_millis() / 100) as usize % FRAMES.len();
+        format!(
+            "{} committing and pushing… {}s",
+            FRAMES[frame],
+            elapsed.as_secs()
+        )
     }
 }
 

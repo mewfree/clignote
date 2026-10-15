@@ -36,7 +36,17 @@ pub fn run(file_path: Option<&str>) -> anyhow::Result<()> {
         execute!(terminal.backend_mut(), style)?;
 
         // Block until something happens; there are no timers, so redrawing on
-        // an idle poll would only burn CPU (and re-run the git diff).
+        // an idle poll would only burn CPU (and re-run the git diff). The one
+        // exception is a running commit-and-push, which animates a spinner.
+        if app.commit_job.is_some() {
+            if !event::poll(std::time::Duration::from_millis(100))? {
+                app.poll_commit_job();
+                continue;
+            }
+            if app.poll_commit_job() {
+                continue;
+            }
+        }
         match event::read()? {
             Event::Key(key) => app.handle_key(key),
             Event::Mouse(mouse) => app.handle_mouse(mouse),

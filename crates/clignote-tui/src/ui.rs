@@ -885,7 +885,10 @@ fn render_cmdline(frame: &mut Frame, app: &App, area: Rect) {
                 format!("/{} ({}/{})", app.search_buf, app.search_match_idx + 1, n)
             }
         }
-        _ => app.message.clone().unwrap_or_default(),
+        _ => match &app.commit_job {
+            Some(job) => job.spinner_line(),
+            None => app.message.clone().unwrap_or_default(),
+        },
     };
     let widget = Paragraph::new(text).style(Style::default().fg(Color::White));
     frame.render_widget(widget, area);
