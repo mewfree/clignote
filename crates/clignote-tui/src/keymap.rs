@@ -116,8 +116,8 @@ fn exact_match(s: &str) -> Option<Action> {
 }
 
 const KNOWN_PREFIXES: &[&str] = &[
-    "g", "d", "y", "C-w", "SPC", "SPC f", "SPC w", "SPC b", "SPC m", "SPC q", "SPC t", "SPC n",
-    "SPC n j", "SPC j",
+    "g", "d", "d t", "y", "C-w", "SPC", "SPC f", "SPC w", "SPC b", "SPC m", "SPC q", "SPC t",
+    "SPC n", "SPC n j", "SPC j",
 ];
 
 pub fn match_seq(seq_str: &str) -> MatchResult {
@@ -135,7 +135,8 @@ pub fn match_seq(seq_str: &str) -> MatchResult {
 pub fn hint_for_prefix(prefix: &str) -> &'static str {
     match prefix {
         "g" => "g: top of file",
-        "d" => "d: delete line  w: delete word",
+        "d" => "d: delete line  w: delete word  t{char}: delete till char",
+        "d t" => "d t: type a char to delete up to (not including) it",
         "y" => "y: yank line",
         "C-w" => "s: hsplit  v: vsplit  w: next  c/q: close  h/j/k/l: focus",
         "SPC" => "SPC: find file  f: file  w: window  b: buffer  m: org  n: notes  j: journal  q: quit  t: toggle",

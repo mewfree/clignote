@@ -731,6 +731,28 @@ impl Pane {
         self.modified = true;
     }
 
+    /// Delete from the cursor up to, but not including, the next `target` on
+    /// the current line (vim `dt{char}`). Returns whether `target` was found;
+    /// the buffer is untouched when it was not.
+    pub fn delete_till_char(&mut self, target: char) -> bool {
+        let col = self.cursor_col;
+        let line = &self.lines[self.cursor_row];
+        let Some(cur) = line.get(col..).and_then(|rest| rest.chars().next()) else {
+            return false;
+        };
+        let search_from = col + cur.len_utf8();
+        let Some(offset) = line[search_from..].find(target) else {
+            return false;
+        };
+        let end = search_from + offset;
+        self.snapshot();
+        let line = &mut self.lines[self.cursor_row];
+        line.replace_range(col..end, "");
+        self.cursor_col = col.min(line.len().saturating_sub(1));
+        self.modified = true;
+        true
+    }
+
     pub fn delete_char_before(&mut self) {
         if self.cursor_col == 0 && self.cursor_row == 0 {
             return;
@@ -945,6 +967,28 @@ mod tests {
         let mut p = Pane::empty();
         p.lines = vec![s.to_string()];
         p
+    }
+
+    #[test]
+    fn delete_till_char_stops_before_target() {
+        let mut p = pane_with_line("hello world");
+        assert!(p.delete_till_char('o'));
+        assert_eq!(p.lines[0], "o world");
+        assert_eq!(p.cursor_col, 0);
+    }
+
+    #[test]
+    fn delete_till_char_skips_char_under_cursor() {
+        let mut p = pane_with_line("aXbX");
+        assert!(p.delete_till_char('X'));
+        assert_eq!(p.lines[0], "XbX");
+    }
+
+    #[test]
+    fn delete_till_char_missing_is_noop() {
+        let mut p = pane_with_line("hello");
+        assert!(!p.delete_till_char('z'));
+        assert_eq!(p.lines[0], "hello");
     }
 
     fn pane_with_doc(s: &str) -> Pane {

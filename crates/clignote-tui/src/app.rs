@@ -480,6 +480,19 @@ impl App {
                 return;
             }
         }
+        // `d t {char}`: the third key is an arbitrary character, which the
+        // string-based keymap cannot express.
+        if keymap::seq_to_str(&self.key_seq) == "d t" {
+            self.key_seq.clear();
+            if let (KeyCode::Char(c), false) =
+                (key.code, key.modifiers.contains(KeyModifiers::CONTROL))
+            {
+                if !self.pane_mut().delete_till_char(c) {
+                    self.message = Some(format!("Can't find '{c}'"));
+                }
+            }
+            return;
+        }
         self.key_seq.push(key);
         let seq_str = keymap::seq_to_str(&self.key_seq);
 
