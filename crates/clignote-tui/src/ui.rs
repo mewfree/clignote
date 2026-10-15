@@ -493,13 +493,7 @@ fn spans_from(cells: &[(char, Style)]) -> Vec<Span<'static>> {
 /// with selection, search and cursor overlays applied. Always at least one
 /// cell, so empty lines can show the cursor.
 fn build_cells(line: &str, row: usize, ctx: &LineCtx<'_>) -> Vec<(char, Style)> {
-    let (chars, base) = if ctx.conceal_links {
-        conceal_links(line)
-    } else {
-        let chars: Vec<char> = line.chars().collect();
-        let styles = org_styles(&chars);
-        (chars, styles)
-    };
+    let (chars, base) = styled_chars(line, ctx.conceal_links);
     let effective_n = chars.len().max(1); // show at least a cursor cell on empty lines
 
     let mut cells = Vec::with_capacity(effective_n);
@@ -653,10 +647,12 @@ fn apply_link_styles(chars: &[char], styles: &mut [Style]) {
 /// Build the display chars/styles for a line with link syntax concealed:
 /// `[[url][desc]]` collapses to just `desc`, and `[[url]]` collapses to just
 /// `url`. All other styling (headings, strikethrough, etc.) is unaffected.
-fn conceal_links(line: &str) -> (Vec<char>, Vec<Style>) {
+fn styled_chars(line: &str, conceal: bool) -> (Vec<char>, Vec<Style>) {
     let chars: Vec<char> = line.chars().collect();
     let styles = org_styles(&chars);
-
+    if !conceal {
+        return (chars, styles);
+    }
     let Some(keep) = wrap::conceal_mask(&chars) else {
         return (chars, styles);
     };
@@ -900,7 +896,7 @@ mod tests {
     use super::*;
 
     fn concealed(line: &str) -> String {
-        conceal_links(line).0.into_iter().collect()
+        styled_chars(line, true).0.into_iter().collect()
     }
 
     fn tag_col(line: &str) -> usize {
@@ -931,7 +927,7 @@ mod tests {
 
     #[test]
     fn conceal_links_keeps_styles_aligned_with_chars() {
-        let (chars, styles) = conceal_links("a [[u][d]] b [[x]]");
+        let (chars, styles) = styled_chars("a [[u][d]] b [[x]]", true);
         assert_eq!(chars.len(), styles.len());
     }
 

@@ -208,11 +208,11 @@ fn try_inactive_timestamp(chars: &[char], start: usize) -> Option<(Timestamp, us
     // Validate rough date pattern: NNNN-NN-NN
     let b = inner.as_bytes();
     if b.len() >= 10
-        && b[..4].iter().all(|c| c.is_ascii_digit())
+        && b[..4].iter().all(u8::is_ascii_digit)
         && b[4] == b'-'
-        && b[5..7].iter().all(|c| c.is_ascii_digit())
+        && b[5..7].iter().all(u8::is_ascii_digit)
         && b[7] == b'-'
-        && b[8..10].iter().all(|c| c.is_ascii_digit())
+        && b[8..10].iter().all(u8::is_ascii_digit)
     {
         Some((
             Timestamp {

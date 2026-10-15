@@ -183,7 +183,7 @@ impl<'a> Parser<'a> {
                     if is_props {
                         properties.push(Property { key, value });
                     } else {
-                        raw_lines.push(format!(":{}: {}", key, value));
+                        raw_lines.push(format!(":{key}: {value}"));
                     }
                     self.advance();
                 }
@@ -342,7 +342,7 @@ fn extract_tags(s: &str) -> (String, Vec<String>) {
             let tags: Vec<String> = tag_str[1..tag_str.len() - 1]
                 .split(':')
                 .filter(|t| !t.is_empty() && t.chars().all(is_tag_char))
-                .map(|t| t.to_string())
+                .map(std::string::ToString::to_string)
                 .collect();
             if !tags.is_empty() {
                 return (s[..opening_colon].trim_end().to_string(), tags);

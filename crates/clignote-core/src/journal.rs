@@ -156,21 +156,20 @@ impl Date {
         let mut rest = name.strip_suffix(".org")?;
         let (mut year, mut month, mut day) = (None, None, None);
         for piece in &fmt.0 {
-            match piece {
-                Piece::Lit(s) => rest = rest.strip_prefix(s.as_str())?,
-                _ => {
-                    let width = if *piece == Piece::Year { 4 } else { 2 };
-                    let digits = rest.get(..width)?;
-                    if !digits.bytes().all(|b| b.is_ascii_digit()) {
-                        return None;
-                    }
-                    let n: u32 = digits.parse().ok()?;
-                    rest = &rest[width..];
-                    match piece {
-                        Piece::Year => year = Some(n as i32),
-                        Piece::Month => month = Some(n),
-                        _ => day = Some(n),
-                    }
+            if let Piece::Lit(s) = piece {
+                rest = rest.strip_prefix(s.as_str())?
+            } else {
+                let width = if *piece == Piece::Year { 4 } else { 2 };
+                let digits = rest.get(..width)?;
+                if !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                let n: u32 = digits.parse().ok()?;
+                rest = &rest[width..];
+                match piece {
+                    Piece::Year => year = Some(n as i32),
+                    Piece::Month => month = Some(n),
+                    _ => day = Some(n),
                 }
             }
         }

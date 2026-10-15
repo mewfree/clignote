@@ -900,7 +900,7 @@ impl Pane {
         let after_bullet = if tail.starts_with("- ") || tail.starts_with("+ ") {
             indent + 2
         } else {
-            let digits = tail.chars().take_while(|c| c.is_ascii_digit()).count();
+            let digits = tail.chars().take_while(char::is_ascii_digit).count();
             if digits > 0 && tail.get(digits..).is_some_and(|s| s.starts_with(". ")) {
                 indent + digits + 2
             } else {

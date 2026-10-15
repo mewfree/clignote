@@ -109,7 +109,7 @@ pub fn tokenize_line(line: &str) -> LineToken {
         }
         // Look for second ':'
         if let Some(close) = trimmed[1..].find(':') {
-            let name = &trimmed[1..1 + close];
+            let name = &trimmed[1..=close];
             let after = trimmed[1 + close + 1..].trim();
             if !name.is_empty()
                 && name
