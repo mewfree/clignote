@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -68,7 +68,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // In Browse/BufferList mode, the active pane's content is replaced by the
     // overlay; other panes keep showing their buffers.
-    let overlay_active = matches!(app.mode, Mode::Browse | Mode::BufferList | Mode::FilePicker);
+    let overlay_active = matches!(app.mode, Mode::Browse | Mode::BufferList);
     let visual_sel = app.visual_selection();
 
     // Render each pane. Fields are borrowed disjointly, so the search matches
@@ -94,7 +94,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let pane_ctx = PaneRenderCtx {
             is_active,
             visual_sel: visual_sel.filter(|_| is_active),
-            mode: if is_active { app.mode } else { Mode::Normal },
+            mode: if is_active && app.mode != Mode::FilePicker {
+                app.mode
+            } else {
+                Mode::Normal
+            },
             conceal_links: app.conceal_links,
             wrap: app.wrap,
             indent: app.indent,
@@ -280,28 +284,49 @@ fn render_buffer_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_picker(frame: &mut Frame, app: &mut App, area: Rect) {
-    const HEADER_ROWS: usize = 2; // title line + query line
+/// Centered popup rect covering roughly 60% of `area`, with sane minimums.
+fn popup_rect(area: Rect) -> Rect {
+    let width = (area.width * 3 / 5).max(40).min(area.width);
+    let height = (area.height * 3 / 5).max(10).min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
+}
 
-    let list_height = (area.height as usize).saturating_sub(HEADER_ROWS);
+fn render_picker(frame: &mut Frame, app: &mut App, area: Rect) {
+    const HEADER_ROWS: usize = 1; // query line
+
+    let popup = popup_rect(area);
     let picker = &mut app.picker;
-    scroll_into_view(&mut picker.scroll, picker.selected, list_height);
 
     let title = format!(
-        "Find file in {}  ({}/{}, RET open, Esc cancel)",
+        " Find file in {}  ({}/{}) ",
         picker.root.display(),
         picker.results.len(),
         picker.files.len()
     );
-    let mut lines: Vec<Line> = vec![
-        Line::from(Span::styled(
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(Span::styled(
             title,
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!("> {}", picker.query)),
-    ];
+        ));
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let list_height = (inner.height as usize).saturating_sub(HEADER_ROWS);
+    scroll_into_view(&mut picker.scroll, picker.selected, list_height);
+
+    let query = format!("> {}", picker.query);
+    let cursor_x = inner.x + (query.chars().count() as u16).min(inner.width.saturating_sub(1));
+    let mut lines: Vec<Line> = vec![Line::from(query)];
     if picker.results.is_empty() {
         lines.push(Line::from(Span::styled(
             " (no matching .org files) ",
@@ -323,7 +348,8 @@ fn render_picker(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(Paragraph::new(lines), inner);
+    frame.set_cursor_position((cursor_x, inner.y));
 }
 
 const GIT_GUTTER: u16 = 1;
@@ -1149,21 +1175,25 @@ mod tests {
     }
 
     #[test]
-    fn file_picker_lists_filters_and_shows_query() {
-        let mut app = app_with("");
+    fn file_picker_is_a_centered_popup_with_filter_and_query() {
+        let mut app = app_with("buffer text");
         app.picker = crate::picker::Picker {
             files: vec!["inbox.org".into(), "notes/todo.org".into()],
             ..Default::default()
         };
         app.picker.refilter();
         app.mode = Mode::FilePicker;
-        let (rows, _) = draw(&mut app, 60, 6);
-        // `draw` drops column 0 (the git gutter), hence "ind".
-        assert!(rows[0].contains("ind file in"), "{:?}", rows[0]);
-        // "> " minus the dropped gutter column.
-        assert_eq!(rows[1].trim(), "");
-        assert!(rows[2].contains("inbox.org"));
-        assert!(rows[3].contains("notes/todo.org"));
+        let (rows, cursor) = draw(&mut app, 80, 20);
+        // Buffer stays visible behind the popup, not replaced full-screen.
+        assert!(rows[0].contains("buffer text"), "{:?}", rows[0]);
+        let title = rows
+            .iter()
+            .position(|r| r.contains("Find file in"))
+            .unwrap();
+        assert!(title > 0 && title < 10, "title row {title}");
+        assert!(rows[title + 2].contains("inbox.org"));
+        assert!(rows[title + 3].contains("notes/todo.org"));
+        assert_eq!(cursor.map(|c| c.1), Some(title as u16 + 1));
 
         app.handle_key(crossterm::event::KeyEvent::from(
             crossterm::event::KeyCode::Char('t'),
@@ -1171,10 +1201,14 @@ mod tests {
         app.handle_key(crossterm::event::KeyEvent::from(
             crossterm::event::KeyCode::Char('d'),
         ));
-        let (rows, _) = draw(&mut app, 60, 6);
-        assert_eq!(rows[1].trim(), "td");
-        assert!(rows[2].contains("notes/todo.org"));
-        assert!(rows[3].trim().is_empty(), "{:?}", rows[3]);
+        let (rows, _) = draw(&mut app, 80, 20);
+        assert!(rows[title + 1].contains("> td"), "{:?}", rows[title + 1]);
+        assert!(rows[title + 2].contains("notes/todo.org"));
+        assert!(
+            !rows[title + 3].contains("todo.org"),
+            "{:?}",
+            rows[title + 3]
+        );
     }
 
     #[test]
