@@ -450,7 +450,7 @@ impl App {
             return;
         };
         let rect = self.pane_rects[i];
-        self.active_pane = i;
+        self.set_active_pane(i);
         let pane = &mut self.panes[i];
         // Content starts after the gutter (git mark + line numbers).
         let gutter = crate::ui::gutter_width(self.line_numbers, pane.lines.len(), rect.width);
@@ -970,6 +970,9 @@ impl App {
     fn jump_to_current_match(&mut self) {
         if let Some(&(row, col)) = self.search_matches.get(self.search_match_idx) {
             let pane = self.pane_mut();
+            if row >= pane.lines.len() {
+                return;
+            }
             pane.reveal(row);
             pane.cursor_row = row;
             pane.cursor_col = col;
@@ -1076,11 +1079,21 @@ impl App {
         self.active_pane = closed.min(self.panes.len() - 1);
     }
 
+    /// Focus pane `idx`. Search matches are positions in the previously
+    /// active pane's buffer, so they are dropped rather than applied to another.
+    fn set_active_pane(&mut self, idx: usize) {
+        if idx != self.active_pane {
+            self.search_matches.clear();
+            self.search_match_idx = 0;
+        }
+        self.active_pane = idx;
+    }
+
     fn cycle_pane(&mut self) {
         let leaves = self.layout.leaves();
         if leaves.len() > 1 {
             if let Some(pos) = leaves.iter().position(|&i| i == self.active_pane) {
-                self.active_pane = leaves[(pos + 1) % leaves.len()];
+                self.set_active_pane(leaves[(pos + 1) % leaves.len()]);
             }
         }
     }
@@ -1127,7 +1140,7 @@ impl App {
             })
             .min_by_key(|&(_, dist)| dist);
         if let Some((idx, _)) = best {
-            self.active_pane = idx;
+            self.set_active_pane(idx);
         }
     }
 
