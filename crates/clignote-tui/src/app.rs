@@ -1347,6 +1347,7 @@ impl App {
             KeyCode::Char('p' | 'k') if ctrl => self.picker.move_up(),
             KeyCode::Char('u') if ctrl => self.picker.clear(),
             KeyCode::Backspace => self.picker.pop(),
+            KeyCode::Tab => self.picker.complete(),
             KeyCode::Enter => {
                 let Some(rel) = self.picker.selected_path() else {
                     return;

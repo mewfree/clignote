@@ -165,6 +165,18 @@ impl Picker {
         self.refilter();
     }
 
+    /// Complete the query to the selected result's full path.
+    pub fn complete(&mut self) {
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        let full = path.to_string_lossy().into_owned();
+        if full != self.query {
+            self.query = full;
+            self.refilter();
+        }
+    }
+
     pub fn move_down(&mut self) {
         self.selected = (self.selected + 1).min(self.results.len().saturating_sub(1));
     }
@@ -283,5 +295,15 @@ mod tests {
             files,
             [PathBuf::from("a.org"), PathBuf::from("notes/b.org")]
         );
+    }
+
+    #[test]
+    fn complete_fills_query_with_selected_path() {
+        let mut p = picker_with(&["notes/todo.org", "inbox.org"]);
+        p.push('t');
+        p.push('d');
+        p.complete();
+        assert_eq!(p.query, "notes/todo.org");
+        assert_eq!(p.selected_path(), Some(Path::new("notes/todo.org")));
     }
 }
