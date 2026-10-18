@@ -127,15 +127,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_cmdline(frame, app, cmdline_area);
 }
 
-/// Divide `area` equally between `n` children of a split.
+/// Divide `area` equally between `n` children of a split, leaving a one-cell
+/// gap between neighbours for the divider line.
 fn split_rects(dir: SplitDir, n: usize, area: Rect) -> Vec<Rect> {
     let direction = match dir {
         SplitDir::Horizontal => Direction::Vertical, // stacked top/bottom
         SplitDir::Vertical => Direction::Horizontal, // side by side
     };
-    Layout::new(direction, vec![Constraint::Fill(1); n])
+    let constraints: Vec<Constraint> = (0..n)
+        .flat_map(|i| {
+            let gap = (i + 1 < n).then_some(Constraint::Length(1));
+            std::iter::once(Constraint::Fill(1)).chain(gap)
+        })
+        .collect();
+    Layout::new(direction, constraints)
         .split(area)
-        .to_vec()
+        .iter()
+        .step_by(2)
+        .copied()
+        .collect()
 }
 
 /// Recursively split `area` per the window layout tree, writing each pane's
