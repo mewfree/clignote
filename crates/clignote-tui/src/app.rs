@@ -251,6 +251,9 @@ impl LineNumbers {
     }
 }
 
+/// Idle time after a prefix key before the which-key hint appears.
+const HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
+
 pub struct App {
     pub mode: Mode,
     pub panes: Vec<Pane>,
@@ -265,6 +268,10 @@ pub struct App {
 
     // Multi-key sequence accumulator (normal mode)
     pub key_seq: Vec<KeyEvent>,
+    /// When the which-key hint for a pending sequence should appear. Once one
+    /// hint has been shown, later keys of the same sequence update it instantly.
+    pub hint_due: Option<std::time::Instant>,
+    hint_shown: bool,
 
     // Command mode input
     pub command_buf: String,
@@ -372,6 +379,8 @@ impl App {
             register: Vec::new(),
             visual_anchor: None,
             key_seq: Vec::new(),
+            hint_due: None,
+            hint_shown: false,
             command_buf: String::new(),
             message: None,
             commit_job: None,
@@ -417,6 +426,7 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.message = None;
+        self.hint_due = None;
         match self.mode {
             Mode::Normal => self.handle_normal(key),
             Mode::Insert => self.handle_insert(key),
@@ -493,14 +503,22 @@ impl App {
             }
             return;
         }
+        if self.key_seq.is_empty() {
+            self.hint_shown = false;
+        }
         self.key_seq.push(key);
         let seq_str = keymap::seq_to_str(&self.key_seq);
 
         match keymap::match_seq(&seq_str) {
             MatchResult::Prefix => {
-                let hint = keymap::hint_for_prefix(&seq_str);
-                self.message = Some(format!("[{seq_str}]  {hint}"));
-                // keep accumulating
+                // Keep accumulating. Show the hint at once if one is already
+                // up; otherwise wait out the delay so fluent typists never
+                // see the menu flash.
+                if self.hint_shown {
+                    self.show_pending_hint();
+                } else {
+                    self.hint_due = Some(std::time::Instant::now() + HINT_DELAY);
+                }
             }
             MatchResult::Action(action) => {
                 self.key_seq.clear();
@@ -1535,6 +1553,18 @@ impl App {
 
     /// Collect a finished commit-and-push. Returns `true` when the job just
     /// completed (the screen needs a redraw either way while one is running).
+    /// Display the which-key hint for the pending key sequence, if any.
+    pub fn show_pending_hint(&mut self) {
+        self.hint_due = None;
+        if self.key_seq.is_empty() {
+            return;
+        }
+        let seq_str = keymap::seq_to_str(&self.key_seq);
+        let hint = keymap::hint_for_prefix(&seq_str);
+        self.message = Some(format!("[{seq_str}]  {hint}"));
+        self.hint_shown = true;
+    }
+
     pub fn poll_commit_job(&mut self) -> bool {
         let Some(job) = &self.commit_job else {
             return false;

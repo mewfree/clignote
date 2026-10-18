@@ -36,7 +36,7 @@ pub fn run(file_path: Option<&str>) -> anyhow::Result<()> {
         };
         execute!(terminal.backend_mut(), style)?;
 
-        // Block until something happens; there are no timers, so redrawing on
+        // Block until something happens; the only timers are the which-key delay and the spinner, so redrawing on
         // an idle poll would only burn CPU (and re-run the git diff). The one
         // exception is a running commit-and-push, which animates a spinner.
         if app.commit_job.is_some() {
@@ -45,6 +45,13 @@ pub fn run(file_path: Option<&str>) -> anyhow::Result<()> {
                 continue;
             }
             if app.poll_commit_job() {
+                continue;
+            }
+        }
+        if let Some(due) = app.hint_due {
+            let wait = due.saturating_duration_since(std::time::Instant::now());
+            if !event::poll(wait)? {
+                app.show_pending_hint();
                 continue;
             }
         }
