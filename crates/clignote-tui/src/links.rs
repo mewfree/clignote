@@ -17,6 +17,13 @@ pub struct LinkSpan {
     pub end: usize,
 }
 
+impl LinkSpan {
+    /// The visible text: the description, or the URL itself when bare.
+    pub fn text(&self) -> Range<usize> {
+        self.desc.clone().unwrap_or_else(|| self.url.clone())
+    }
+}
+
 pub fn find_links<T: Copy + PartialEq>(s: &[T], open: T, close: T) -> Vec<LinkSpan> {
     let n = s.len();
     let mut out = Vec::new();

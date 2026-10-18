@@ -3,6 +3,8 @@
 //! Pure functions only: scanning directories and opening files is the
 //! caller's job, so this stays headless and I/O-free.
 
+use std::fmt::Write;
+
 const WEEKDAYS: [&str; 7] = [
     "Sunday",
     "Monday",
@@ -126,9 +128,15 @@ impl Date {
         let mut out = String::new();
         for piece in &fmt.0 {
             match piece {
-                Piece::Year => out.push_str(&format!("{:04}", self.year)),
-                Piece::Month => out.push_str(&format!("{:02}", self.month)),
-                Piece::Day => out.push_str(&format!("{:02}", self.day)),
+                Piece::Year => {
+                    let _ = write!(out, "{:04}", self.year);
+                }
+                Piece::Month => {
+                    let _ = write!(out, "{:02}", self.month);
+                }
+                Piece::Day => {
+                    let _ = write!(out, "{:02}", self.day);
+                }
                 Piece::Lit(s) => out.push_str(s),
             }
         }

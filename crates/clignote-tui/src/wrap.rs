@@ -30,7 +30,7 @@ pub fn conceal_mask(chars: &[char]) -> Option<Vec<bool>> {
     }
     let mut keep = vec![true; chars.len()];
     for link in &found {
-        let text = link.desc.clone().unwrap_or_else(|| link.url.clone());
+        let text = link.text();
         keep[link.start..text.start].fill(false);
         keep[text.end..=link.end].fill(false);
     }

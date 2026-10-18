@@ -1596,9 +1596,8 @@ impl App {
     /// Returns `Some((start_row, start_col, end_row, end_col, line_wise))` when
     /// a visual selection is active, with start ≤ end guaranteed.
     pub fn visual_selection(&self) -> Option<(usize, usize, usize, usize, bool)> {
-        let line_wise = match self.mode {
-            Mode::Visual { line_wise } => line_wise,
-            _ => return None,
+        let Mode::Visual { line_wise } = self.mode else {
+            return None;
         };
         let (ar, ac) = self.visual_anchor?;
         let pane = self.pane();

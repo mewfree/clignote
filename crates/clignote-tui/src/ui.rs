@@ -719,8 +719,7 @@ fn apply_link_styles(chars: &[char], styles: &mut [Style]) {
         .add_modifier(Modifier::UNDERLINED);
 
     for link in links::find_links(chars, '[', ']') {
-        // The visible text: the description, or the URL itself when bare.
-        let text = link.desc.clone().unwrap_or_else(|| link.url.clone());
+        let text = link.text();
         styles[link.start..text.start].fill(dim);
         styles[text.clone()].fill(desc_style);
         styles[text.end..=link.end].fill(dim);

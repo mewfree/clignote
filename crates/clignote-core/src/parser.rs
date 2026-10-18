@@ -133,14 +133,14 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Some(Block::HorizontalRule)
             }
-            LineToken::BeginBlock { kind, params } => self.parse_src_or_block(&kind, &params),
-            LineToken::DrawerBegin(name) => self.parse_drawer(&name),
+            LineToken::BeginBlock { kind, params } => Some(self.parse_src_or_block(&kind, &params)),
+            LineToken::DrawerBegin(name) => Some(self.parse_drawer(&name)),
             LineToken::ListItem { .. } => self.parse_list(),
             _ => self.parse_paragraph(),
         }
     }
 
-    fn parse_src_or_block(&mut self, kind: &str, params: &str) -> Option<Block> {
+    fn parse_src_or_block(&mut self, kind: &str, params: &str) -> Block {
         self.advance(); // consume #+begin_…
 
         if kind == "SRC" {
@@ -152,10 +152,10 @@ impl<'a> Parser<'a> {
                 }
                 body_lines.push(line);
             }
-            Some(Block::SrcBlock(SrcBlock {
+            Block::SrcBlock(SrcBlock {
                 language,
                 body: body_lines.join("\n"),
-            }))
+            })
         } else {
             // Generic block: skip until #+end_KIND
             while let Some(line) = self.advance() {
@@ -163,11 +163,11 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
-            Some(Block::BlankLine) // TODO: implement QuoteBlock etc.
+            Block::BlankLine // TODO: implement QuoteBlock etc.
         }
     }
 
-    fn parse_drawer(&mut self, name: &str) -> Option<Block> {
+    fn parse_drawer(&mut self, name: &str) -> Block {
         self.advance(); // consume :NAME:
         let is_props = name.eq_ignore_ascii_case("PROPERTIES");
         let mut properties: Vec<Property> = Vec::new();
@@ -196,12 +196,12 @@ impl<'a> Parser<'a> {
         }
 
         if is_props {
-            Some(Block::PropertyDrawer(properties))
+            Block::PropertyDrawer(properties)
         } else {
-            Some(Block::Drawer {
+            Block::Drawer {
                 name: name.to_string(),
                 lines: raw_lines,
-            })
+            }
         }
     }
 
