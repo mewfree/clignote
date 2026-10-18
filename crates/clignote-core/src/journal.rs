@@ -13,21 +13,6 @@ const WEEKDAYS: [&str; 7] = [
     "Saturday",
 ];
 
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Piece {
     Year,
@@ -179,14 +164,11 @@ impl Date {
         Self::new(year?, month?, day?)
     }
 
-    /// Top-level day headline, e.g. `* Wednesday, 14 October 2026`.
-    pub fn headline(self) -> String {
+    /// File header for a new journal day, e.g. `#+title: 2026-10-14`.
+    pub fn header(self) -> String {
         format!(
-            "* {}, {} {} {}",
-            self.weekday(),
-            self.day,
-            MONTHS[(self.month - 1) as usize],
-            self.year
+            "#+title: {:04}-{:02}-{:02}",
+            self.year, self.month, self.day
         )
     }
 }
@@ -257,7 +239,7 @@ mod tests {
 
     #[test]
     fn headlines() {
-        assert_eq!(d(2026, 10, 14).headline(), "* Wednesday, 14 October 2026");
+        assert_eq!(d(2026, 10, 14).header(), "#+title: 2026-10-14");
         assert_eq!(timed_headline(1, 9, 5), "* 09:05 ");
         assert_eq!(timed_headline(2, 14, 30), "** 14:30 ");
     }

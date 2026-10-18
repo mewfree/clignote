@@ -1223,7 +1223,7 @@ impl App {
                 self.message = Some(format!("Cannot create \"{}\": {e}", dir.display()));
                 return;
             }
-            Pane::new_file(path, vec![today.headline()])
+            Pane::new_file(path, vec![today.header()])
         };
         if new_entry {
             if self.config.journal_blank_above
